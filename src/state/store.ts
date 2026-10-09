@@ -83,6 +83,14 @@ export interface AppStore {
   toggleGridLines: (slot: Slot) => void;
 }
 
+function prefersDark(): boolean {
+  try {
+    return typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+  } catch {
+    return false;
+  }
+}
+
 const defaultSlotUI = (): FontSlotUI => ({
   glyphId: null,
   glyphListSearch: '',
@@ -100,7 +108,7 @@ export const useStore = create<AppStore>((set, get) => ({
   active: 'A',
   dirty: { A: false, B: false },
   ui: { A: defaultSlotUI(), B: defaultSlotUI() },
-  theme: typeof window !== 'undefined' && (window.matchMedia?.('(prefers-color-scheme: dark)')?.matches) ? 'dark' : 'light',
+  theme: prefersDark() ? 'dark' : 'light',
   busy: null,
   toasts: [],
   modal: { type: 'none' },

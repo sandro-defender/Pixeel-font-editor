@@ -156,6 +156,17 @@ export function updateMetrics(doc: FontDoc, metrics: FontDoc['metrics']): FontDo
   return { ...doc, metrics: { ...metrics, unitsPerEm: Math.round(metrics.unitsPerEm), ascent: Math.round(metrics.ascent), descent: Math.round(metrics.descent), lineGap: Math.round(metrics.lineGap) } };
 }
 
+/** Give an outline-less glyph a blank pixel grid matching the font's template. */
+export function initializePixelGrid(doc: FontDoc, glyphId: string): FontDoc {
+  const template = doc.glyphs.find((g) => g.pixel)?.pixel;
+  if (!template) throw new Error('This font has no pixel grid template (create a pixel font first).');
+  return withGlyphMap(doc, glyphId, (g) =>
+    g.pixel
+      ? g
+      : { ...g, pixel: { ...template, cellsB64: bytesToB64(new Uint8Array(template.width * template.height)) }, kind: 'pixel' },
+  );
+}
+
 export function makeEmptyGlyph(doc: FontDoc, unicode: number | null, name?: string): GlyphDoc {
   const template = doc.glyphs.find((g) => g.pixel)?.pixel;
   const g = emptyGlyphDoc(name || suggestGlyphName(unicode, doc.glyphs.length) || 'glyph', template ? template.width * template.unitsPerCell : Math.round(doc.metrics.unitsPerEm / 2));

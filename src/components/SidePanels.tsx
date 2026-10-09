@@ -238,7 +238,8 @@ export function ComparePanel() {
   useEffect(() => {
     const render = (canvas: HTMLCanvasElement | null, doc: typeof docA) => {
       if (!canvas) return;
-      const ctx = canvas.getContext('2d')!;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
       const dpr = window.devicePixelRatio || 1;
       canvas.width = 150 * dpr;
       canvas.height = 150 * dpr;

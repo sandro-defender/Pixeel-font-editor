@@ -5,6 +5,7 @@ import type { GlyphDoc, Slot } from '../core/types';
 import { charFromCodePoint, describeCodePoint, unicodeName } from '../core/unicodeNames';
 import { renderGlyphCard } from '../render/glyphRender';
 import { Btn, SegBtns } from './ui';
+import { basicSetGlyphs } from '../core/fontFactory';
 
 function parseSearch(q: string): (g: GlyphDoc) => boolean {
   const s = q.trim();
@@ -91,6 +92,19 @@ export function GlyphBrowser(props: { slot: Slot }) {
   const setListFilter = useStore((s) => s.setListFilter);
   const openModal = useStore((s) => s.openModal);
   const setMultiSelect = useStore((s) => s.setMultiSelect);
+  const commit = useStore((s) => s.commit);
+  const toast = useStore((s) => s.toast);
+
+  const addBasicSet = () => {
+    if (!doc) return;
+    const glyphs = basicSetGlyphs(doc);
+    if (glyphs.length === 0) {
+      toast('info', 'All basic Latin, digit, punctuation and Georgian glyphs already exist.');
+      return;
+    }
+    commit(slot, 'Add basic set', (d) => ({ ...d, glyphs: [...d.glyphs, ...glyphs] }));
+    toast('success', `Added ${glyphs.length} starter glyphs (Latin, digits, punctuation, Georgian).`);
+  };
 
   const glyphs = useMemo(() => {
     if (!doc) return [];
@@ -120,6 +134,7 @@ export function GlyphBrowser(props: { slot: Slot }) {
             aria-label="Search glyphs"
           />
           <Btn kind="primary" tip="Create a new glyph" onClick={() => openModal({ type: 'addGlyph', slot })}>＋ Glyph</Btn>
+          <Btn tip="Add empty glyphs for basic Latin, digits, punctuation and Georgian Mkhedruli" onClick={addBasicSet}>Aa+</Btn>
         </div>
         <div className="row">
           <SegBtns

@@ -60,7 +60,8 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || !pixel) return;
-    const ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
     const W = gridW * zoom;
     const H = gridH * zoom;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -207,7 +208,8 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       if (!canvas) return;
       canvas.width = bm.width * scale;
       canvas.height = bm.height * scale;
-      const ctx = canvas.getContext('2d')!;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#111';
       for (let y = 0; y < bm.height; y++) {

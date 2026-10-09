@@ -1,5 +1,4 @@
 /** Client for the font worker, with a main-thread fallback. */
-import FontWorker from '../workers/fontWorker?worker';
 import type { WorkerReq, WorkerResp } from '../workers/fontWorker';
 import { buildTtf, type ExportOptions, type ExportReport, type TtfLike } from '../core/fontCodec';
 import type { FontDoc } from '../core/types';
@@ -11,15 +10,23 @@ export interface ExportOutcome {
 }
 
 let worker: Worker | null = null;
+let workerFailed = false;
 let seq = 1;
 const pending = new Map<number, (resp: WorkerResp) => void>();
 /** sourceRefs the worker already holds */
 const workerKnownRefs = new Set<string>();
 
-function getWorker(): Worker | null {
-  if (worker) return worker;
+async function getWorker(): Promise<Worker | null> {
+  if (worker || workerFailed) return worker;
+  if (typeof Worker === 'undefined') {
+    workerFailed = true;
+    return null;
+  }
   try {
-    worker = new FontWorker();
+    // Lazy import keeps the worker module out of non-browser test runs.
+    const mod = await import('../workers/fontWorker?worker');
+    const Ctor = mod.default;
+    worker = new Ctor();
     worker.onmessage = (ev: MessageEvent<WorkerResp>) => {
       const cb = pending.get(ev.data.reqId);
       if (cb) {
@@ -28,12 +35,13 @@ function getWorker(): Worker | null {
       }
     };
     worker.onerror = () => {
-      // fall back to main thread for future calls
       worker?.terminate();
       worker = null;
+      workerFailed = true;
     };
     return worker;
   } catch {
+    workerFailed = true;
     return null;
   }
 }
@@ -45,9 +53,9 @@ function attachSource(req: { sourceRef: string | null; sourceTtf?: TtfLike | nul
   }
 }
 
-/** Full export with validation (runs in the worker). */
+/** Full export with validation (runs in the worker when available). */
 export async function exportFont(doc: FontDoc, options: ExportOptions): Promise<ExportOutcome> {
-  const w = getWorker();
+  const w = await getWorker();
   if (w) {
     const reqId = seq++;
     const req: WorkerReq = { type: 'export', reqId, doc, options, sourceRef: doc.sourceRef };
@@ -65,14 +73,14 @@ export async function exportFont(doc: FontDoc, options: ExportOptions): Promise<
     if (!resp.ok || !resp.buffer || !resp.report) throw new Error(resp.error ?? 'Export failed.');
     return { buffer: resp.buffer, report: resp.report };
   }
-  // main-thread fallback
+  // main-thread fallback (tests, old browsers, worker errors)
   const { buffer, report } = buildTtf({ doc, sourceTtf: getSource(doc.sourceRef), options });
   return { buffer, report };
 }
 
 /** Fast preview build (no validation, no hinting/kerning). */
 export async function buildPreviewFont(doc: FontDoc, familySuffix: string): Promise<ArrayBuffer> {
-  const w = getWorker();
+  const w = await getWorker();
   if (w) {
     const reqId = seq++;
     const req: WorkerReq = { type: 'preview', reqId, doc, familySuffix, sourceRef: doc.sourceRef };

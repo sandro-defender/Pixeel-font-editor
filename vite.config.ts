@@ -47,8 +47,8 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: { '@': path.resolve(__dirname, 'src') },
     },
-    server: { host: '0.0.0.0', port: 5173 },
-    preview: { host: '0.0.0.0', port: 4173 },
+    server: { host: '0.0.0.0', port: 5173, allowedHosts: true },
+    preview: { host: '0.0.0.0', port: 4173, allowedHosts: true },
     build: {
       target: 'es2020',
       chunkSizeWarningLimit: 3000,
@@ -56,7 +56,7 @@ export default defineConfig(({ mode }) => {
     worker: { format: 'es' },
     test: {
       environment: 'node',
-      include: ['test/**/*.test.ts'],
+      include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
       testTimeout: 60000,
       hookTimeout: 60000,
     },

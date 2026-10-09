@@ -1,5 +1,5 @@
 /** Main editor: picks pixel vs outline mode for the selected glyph. */
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useStore } from '../state/store';
 import type { Slot } from '../core/types';
 import { PixelEditor } from './PixelEditor';
@@ -7,6 +7,7 @@ import { OutlineEditor } from './OutlineEditor';
 import { Btn } from './ui';
 import { flattenedGlyph } from '../core/fontCodec';
 import { rasterizeContours, defaultRasterizeFrame } from '../core/rasterize';
+import { initializePixelGrid } from '../state/glyphActions';
 
 export function EditorPanel(props: { slot: Slot }) {
   const { slot } = props;
@@ -16,6 +17,11 @@ export function EditorPanel(props: { slot: Slot }) {
   const openModal = useStore((s) => s.openModal);
   const toast = useStore((s) => s.toast);
   const [mode, setMode] = useState<'pixel' | 'outline' | null>(null);
+
+  // reset the explicit mode choice when switching glyphs
+  useEffect(() => {
+    setMode(null);
+  }, [ui.glyphId]);
 
   if (!doc) return null;
   const glyph = doc.glyphs.find((g) => g.id === ui.glyphId);
@@ -77,14 +83,28 @@ export function EditorPanel(props: { slot: Slot }) {
         <OutlineEditor slot={slot} glyph={glyph} />
       ) : (
         <div className="editor-body">
-          <p className="muted">
-            This glyph has no outline data yet.{' '}
-            {glyph.pixel ? (
-              <Btn onClick={() => setMode('pixel')}>Edit pixels</Btn>
-            ) : (
-              <Btn onClick={() => openModal({ type: 'rasterize', slot, glyphId: glyph.id })}>Create a pixel grid…</Btn>
+          <p className="muted">This glyph has no outline data yet.</p>
+          <div className="row">
+            {doc.glyphs.some((g) => g.pixel) && (
+              <Btn
+                kind="primary"
+                tip="Start drawing on a blank grid sized like the other glyphs"
+                onClick={() => {
+                  commit(slot, 'Init pixel grid', (d) => initializePixelGrid(d, glyph.id));
+                  setMode('pixel');
+                }}
+              >
+                ▦ Create pixel grid
+              </Btn>
             )}
-          </p>
+            {glyph.contours.length > 0 || glyph.sourceContours ? (
+              <Btn onClick={() => setMode('outline')}>Edit outlines</Btn>
+            ) : (
+              !doc.glyphs.some((g) => g.pixel) && (
+                <Btn onClick={() => openModal({ type: 'rasterize', slot, glyphId: glyph.id })}>Create a pixel grid…</Btn>
+              )
+            )}
+          </div>
         </div>
       )}
     </section>
