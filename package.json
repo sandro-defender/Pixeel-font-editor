@@ -1,0 +1,36 @@
+{
+  "name": "pixeel-font-editor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Browser-based pixel/TTF font editor: import, edit and export TrueType fonts entirely client-side.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "build:pages": "VITE_BUILD_PAGES=1 vite build",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify:pages": "node scripts/verify-pages-build.mjs",
+    "deploy": "npm run build:pages && gh-pages -d dist -m \"Deploy Pixeel build\""
+  },
+  "dependencies": {
+    "fonteditor-core": "^2.6.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "zustand": "^5.0.15"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^26.6.5",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "fake-indexeddb": "^6.0.0",
+    "gh-pages": "^6.2.0",
+    "jsdom": "^30.1.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.8"
+  }
+}

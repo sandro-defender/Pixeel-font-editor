@@ -1,0 +1,6 @@
+Copyright (c) 2010-2015, Lukasz Dziedzic (dziedzic@typoland.com),
+with Reserved Font Name Lato.
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+The full license text ships with the application source in src/core/oflText.ts
+and is also available at https://openfontlicense.org
