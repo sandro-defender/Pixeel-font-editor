@@ -1,20 +1,64 @@
-/** Interactive pixel matrix editor (pointer events, tools, selection, zoom). */
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+/**
+ * Interactive pixel matrix editor.
+ *
+ * Pointer: pencil / eraser (right button erases), flood fill, line, rectangle,
+ * marquee selection with move, drag-to-draw.
+ * Keyboard: a cell cursor (arrows) with Space/Enter to act on it, so every
+ * single pixel can be set exactly without the mouse; Shift+arrows nudge the
+ * whole bitmap; Ctrl+A/C/X/V; Esc places a floating selection.
+ * Rulers show exact column and row numbers; the status line reads out the cell
+ * under the pointer or cursor. Mini previews show actual size, enlarged and as
+ * an LED matrix.
+ */
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../state/store';
 import type { GlyphDoc, Slot } from '../core/types';
 import { Bitmap } from '../core/bitmap';
-import { setPixelData } from '../state/glyphActions';
+import { setPixelData, snapGlyphToLed } from '../state/glyphActions';
 import { tracePixelData } from '../core/trace';
 import { contoursToPath2D } from '../render/glyphRender';
+import { checkLedFont, glyphLedIssues, ledLabel } from '../core/ledMatrix';
 import { Btn, IconBtn } from './ui';
 
+/** Clipboard shared by all editor instances (pixels only). */
 let appClipboard: Bitmap | null = null;
+
+/** Pixels reserved for the rulers along the top and left edges. */
+const RULER = 22;
+
+type Tool = 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select';
+
+interface Cell {
+  /** column, 0 = left */
+  x: number;
+  /** bitmap row, 0 = bottom (matches the data model) */
+  y: number;
+}
+
+interface Rect4 {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
 
 interface Selection {
   bm: Bitmap;
   x: number;
   y: number;
 }
+
+type DragState =
+  | { kind: 'paint'; value: number; last: Cell; label: string }
+  | { kind: 'shape'; value: number; start: Cell; cur: Cell }
+  | { kind: 'marquee'; start: Cell; cur: Cell }
+  | { kind: 'move'; startX: number; startY: number; origX: number; origY: number; x: number; y: number };
+
+const css = (name: string, fallback: string): string =>
+  getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+
+const inRect = (r: { x: number; y: number; bm: Bitmap }, c: Cell): boolean =>
+  c.x >= r.x && c.x < r.x + r.bm.width && c.y >= r.y && c.y < r.y + r.bm.height;
 
 export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const { slot, glyph } = props;
@@ -28,74 +72,191 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const toast = useStore((s) => s.toast);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
+  const openModal = useStore((s) => s.openModal);
 
+  const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const actualRef = useRef<HTMLCanvasElement>(null);
   const bigRef = useRef<HTMLCanvasElement>(null);
-  const [sel, setSel] = useState<Selection | null>(null);
-  const [stroke, setStroke] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
-  const [dragMode, setDragMode] = useState<'none' | 'draw' | 'marquee' | 'move'>('none');
-  const liveRef = useRef<Bitmap | null>(null); // working copy during a stroke
-  const lastCellRef = useRef<{ x: number; y: number } | null>(null);
-  const marqueeRef = useRef<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
-  const moveRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
+  const ledRef = useRef<HTMLCanvasElement>(null);
 
   const pixel = glyph.pixel;
   const zoom = ui.zoom;
   const gridW = pixel?.width ?? 0;
   const gridH = pixel?.height ?? 0;
+  const led = doc.ledMatrix ?? null;
+  const tool = ui.tool;
 
-  const baseBitmap = useMemo(() => (pixel ? Bitmap.fromB64(pixel.width, pixel.height, pixel.cellsB64) : null), [pixel]);
-
-  const currentBitmap = useCallback((): Bitmap | null => liveRef.current ?? baseBitmap, [baseBitmap]);
-
-  const commitBitmap = useCallback(
-    (bm: Bitmap, label: string) => {
-      commit(slot, label, (d) => setPixelData(d, glyph.id, { ...pixel!, cellsB64: bm.toB64(), width: bm.width, height: bm.height }));
-    },
-    [commit, slot, glyph.id, pixel],
+  const baseBitmap = useMemo(
+    () => (pixel ? Bitmap.fromB64(pixel.width, pixel.height, pixel.cellsB64) : null),
+    [pixel],
   );
 
-  // ---------------------------------------------------------------- drawing
-  const draw = useCallback(() => {
+  // transient editing state
+  const [sel, setSel] = useState<Selection | null>(null);
+  const [stroke, setStroke] = useState<{ x0: number; y0: number; x1: number; y1: number; value: number } | null>(null);
+  const [marquee, setMarquee] = useState<Rect4 | null>(null);
+  const [cursor, setCursor] = useState<Cell>({ x: 0, y: 0 });
+  const [hover, setHover] = useState<Cell | null>(null);
+  const [kbAnchor, setKbAnchor] = useState<Cell | null>(null);
+  const [tick, setTick] = useState(0);
+  const liveRef = useRef<Bitmap | null>(null); // working copy during a paint stroke
+  const dragRef = useRef<DragState | null>(null);
+  const bump = () => setTick((t) => t + 1);
+
+  // start each glyph with the cursor at the top-left and no leftovers
+  useEffect(() => {
+    setCursor({ x: 0, y: Math.max(0, gridH - 1) });
+    setKbAnchor(null);
+    setStroke(null);
+    setMarquee(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [glyph.id]);
+
+  useEffect(() => {
+    setKbAnchor(null);
+    setStroke(null);
+    setMarquee(null);
+  }, [tool]);
+
+  // LED-font facts shown in the toolbar
+  const ledCheck = useMemo(() => (doc.ledMatrix ? checkLedFont(doc) : null), [doc]);
+  const needsSnap = !!ledCheck && glyphLedIssues(ledCheck, glyph.id).some((i) => i.severity === 'error');
+
+  // ------------------------------------------------------------- helpers
+  /** The bitmap with any floating selection pressed into it (no state change). */
+  const withSel = (src: Bitmap): Bitmap => {
+    const out = src.clone();
+    if (sel) out.paste(sel.bm, sel.x, sel.y, 'or');
+    return out;
+  };
+
+  const commitBitmap = (bm: Bitmap, label: string) => {
+    commit(slot, label, (d) => setPixelData(d, glyph.id, { ...pixel!, cellsB64: bm.toB64(), width: bm.width, height: bm.height }));
+  };
+
+  /** Commit `work` if it differs from the base, and drop the floating selection. */
+  const commitWork = (work: Bitmap, label: string) => {
+    if (baseBitmap && !work.equals(baseBitmap)) commitBitmap(work, label);
+    setSel(null);
+  };
+
+  const clampCell = (c: Cell): Cell => ({
+    x: Math.max(0, Math.min(gridW - 1, c.x)),
+    y: Math.max(0, Math.min(gridH - 1, c.y)),
+  });
+
+  /** Map a pointer position to a grid cell (raw: may lie outside the grid). */
+  const cellAt = (e: { clientX: number; clientY: number }): Cell & { inside: boolean } => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    const sx = canvas.width / rect.width;
+    const sy = canvas.height / rect.height;
+    const px = (e.clientX - rect.left) * sx - RULER;
+    const py = (e.clientY - rect.top) * sy - RULER;
+    const x = Math.floor(px / zoom);
+    const screenRow = Math.floor(py / zoom);
+    const y = gridH - 1 - screenRow;
+    const inside = px >= 0 && py >= 0 && x >= 0 && x < gridW && screenRow >= 0 && screenRow < gridH;
+    return { x, y, inside };
+  };
+
+  /** Fill / flood region at a cell. Left: toggles the region; right: clears it. */
+  const floodAt = (cell: Cell, right: boolean) => {
+    const work = withSel(baseBitmap!);
+    const target = work.get(cell.x, cell.y);
+    const value = right || target ? 0 : 1;
+    if (target !== value) work.floodFill(cell.x, cell.y, value);
+    commitWork(work, 'Fill');
+  };
+
+  /** Extract a rectangle (marquee) as a floating selection. */
+  const finishMarquee = (a: Cell, b: Cell) => {
+    if (!baseBitmap) return;
+    const xa = Math.max(0, Math.min(gridW - 1, Math.min(a.x, b.x)));
+    const xb = Math.max(0, Math.min(gridW - 1, Math.max(a.x, b.x)));
+    const ya = Math.max(0, Math.min(gridH - 1, Math.min(a.y, b.y)));
+    const yb = Math.max(0, Math.min(gridH - 1, Math.max(a.y, b.y)));
+    const w = xb - xa + 1;
+    const h = yb - ya + 1;
+    const merged = withSel(baseBitmap);
+    const extracted = merged.extract(xa, ya, w, h);
+    if (extracted.count() > 0) {
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (extracted.get(x, y)) merged.set(xa + x, ya + y, 0);
+      commitBitmap(merged, 'Select pixels');
+      setSel({ bm: extracted, x: xa, y: ya });
+    } else {
+      commitWork(merged, 'Place selection');
+    }
+  };
+
+  // ------------------------------------------------------------- drawing
+  useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !pixel) return;
+    if (!canvas || !pixel || !baseBitmap) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const W = gridW * zoom;
     const H = gridH * zoom;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--panel').trim() || '#fff';
-    ctx.fillRect(0, 0, W, H);
+    const cw = W + RULER;
+    const ch = H + RULER;
+    if (canvas.width !== cw) canvas.width = cw;
+    if (canvas.height !== ch) canvas.height = ch;
 
-    const bm = currentBitmap();
-    if (bm) {
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#111';
-      for (let y = 0; y < bm.height; y++) {
-        for (let x = 0; x < bm.width; x++) {
-          if (bm.get(x, y)) ctx.fillRect(x * zoom, (gridH - 1 - y) * zoom, zoom, zoom);
-        }
+    const cPanel = css('--panel', '#fff');
+    const cPanel2 = css('--panel-2', '#f3f4f7');
+    const cText = css('--text', '#111');
+    const cDim = css('--text-dim', '#888');
+    const cAccent = css('--accent', '#d40');
+    const cAccent2 = css('--accent-2', '#26c');
+    const cGrid = css('--grid', 'rgba(0,0,0,0.12)');
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.fillStyle = cPanel2;
+    ctx.fillRect(0, 0, cw, ch);
+    ctx.fillStyle = cPanel;
+    ctx.fillRect(RULER, RULER, W, H);
+
+    const bm = liveRef.current ?? baseBitmap;
+
+    // --- grid content (drawn in cell space, origin = top-left of the grid)
+    ctx.save();
+    ctx.translate(RULER, RULER);
+    ctx.fillStyle = cText;
+    for (let y = 0; y < bm.height; y++) {
+      for (let x = 0; x < bm.width; x++) {
+        if (bm.get(x, y)) ctx.fillRect(x * zoom, (gridH - 1 - y) * zoom, zoom, zoom);
       }
     }
 
-    // selection content (floating)
+    // floating selection
     if (sel) {
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent-2').trim() || '#26c';
+      ctx.fillStyle = cAccent2;
       for (let y = 0; y < sel.bm.height; y++) {
         for (let x = 0; x < sel.bm.width; x++) {
           if (sel.bm.get(x, y)) ctx.fillRect((sel.x + x) * zoom, (gridH - 1 - (sel.y + y)) * zoom, zoom, zoom);
         }
       }
-      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#d40';
+      ctx.strokeStyle = cAccent;
       ctx.setLineDash([4, 3]);
       ctx.lineWidth = 1.5;
       ctx.strokeRect(sel.x * zoom + 0.5, (gridH - sel.y - sel.bm.height) * zoom + 0.5, sel.bm.width * zoom - 1, sel.bm.height * zoom - 1);
       ctx.setLineDash([]);
     }
 
+    // hover + keyboard cursor
+    if (hover && !dragRef.current) {
+      ctx.fillStyle = 'rgba(38,102,204,0.18)';
+      ctx.fillRect(hover.x * zoom, (gridH - 1 - hover.y) * zoom, zoom, zoom);
+    }
+    ctx.strokeStyle = cAccent;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(cursor.x * zoom + 1, (gridH - 1 - cursor.y) * zoom + 1, zoom - 2, zoom - 2);
+
     // grid lines
     if (ui.showGrid && zoom >= 5) {
-      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--grid').trim() || 'rgba(0,0,0,0.12)';
+      ctx.strokeStyle = cGrid;
       ctx.lineWidth = 1;
       ctx.beginPath();
       for (let x = 0; x <= gridW; x++) {
@@ -125,332 +286,440 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       ctx.font = '10px system-ui';
       ctx.fillText(label, 3, Math.max(10, Math.min(H - 3, y - 3)));
     };
-    const gc = getComputedStyle(document.documentElement).getPropertyValue('--guide').trim() || '#26c';
-    guide(yFor(0), gc, 'baseline');
-    guide(yFor(doc.metrics.ascent), gc, 'ascent');
-    guide(yFor(doc.metrics.descent), gc, 'descent');
-    // origin & advance
-    const xOrigin = -pixel.offsetX / upc * zoom;
-    const xAdv = (glyph.advanceWidth - pixel.offsetX) / upc * zoom;
+    guide(yFor(0), cAccent2, 'baseline');
+    guide(yFor(doc.metrics.ascent), cAccent2, 'ascent');
+    guide(yFor(doc.metrics.descent), cAccent2, 'descent');
+    const xOrigin = (-pixel.offsetX / upc) * zoom;
+    const xAdv = ((glyph.advanceWidth - pixel.offsetX) / upc) * zoom;
     for (const [x, lab] of [[xOrigin, 'origin'], [xAdv, 'advance']] as Array<[number, string]>) {
       if (x < -20 || x > W + 20) continue;
-      ctx.strokeStyle = gc;
+      ctx.strokeStyle = cAccent2;
       ctx.setLineDash([2, 4]);
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, H);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = gc;
+      ctx.fillStyle = cAccent2;
       ctx.font = '10px system-ui';
       ctx.fillText(lab, Math.max(2, Math.min(W - 40, x + 3)), H - 4);
     }
 
-    // reference overlay glyph
+    // reference overlay (trace another glyph)
     if (ui.overlayGlyphId) {
       const og = doc.glyphs.find((g) => g.id === ui.overlayGlyphId);
       if (og && og.id !== glyph.id) {
-        let contours = og.kind === 'pixel' && og.pixel ? tracePixelData(og.pixel) : og.contours;
+        const contours = og.kind === 'pixel' && og.pixel ? tracePixelData(og.pixel) : og.contours;
         if (contours.length) {
           const map = (x: number, y: number): [number, number] => [
             ((x - pixel.offsetX) / upc) * zoom,
             H - (pixel.baselineRow + y / upc) * zoom,
           ];
-          const path = contoursToPath2D(contours, map);
           ctx.save();
           ctx.globalAlpha = 0.3;
-          ctx.fillStyle = gc;
-          ctx.fill(path, 'nonzero');
+          ctx.fillStyle = cAccent2;
+          ctx.fill(contoursToPath2D(contours, map), 'nonzero');
           ctx.restore();
         }
       }
     }
 
-    // stroke preview (line / rect / marquee)
-    if (stroke && (ui.tool === 'line' || ui.tool === 'rect')) {
-      ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#d40';
+    // shape preview: drag stroke, or keyboard two-step (anchor → cursor)
+    const cx = (c: number) => c * zoom + zoom / 2;
+    const cy = (r: number) => (gridH - 1 - r) * zoom + zoom / 2;
+    const shapeFrom = stroke
+      ? { x0: stroke.x0, y0: stroke.y0, x1: stroke.x1, y1: stroke.y1 }
+      : kbAnchor && (tool === 'line' || tool === 'rect')
+        ? { x0: kbAnchor.x, y0: kbAnchor.y, x1: cursor.x, y1: cursor.y }
+        : null;
+    if (shapeFrom && (tool === 'line' || tool === 'rect')) {
+      ctx.strokeStyle = cAccent;
       ctx.lineWidth = Math.max(2, zoom * 0.6);
       ctx.beginPath();
-      const cx = (c: number) => c * zoom + zoom / 2;
-      const cy = (r: number) => (gridH - 1 - r) * zoom + zoom / 2;
-      if (ui.tool === 'line') {
-        ctx.moveTo(cx(stroke.x0), cy(stroke.y0));
-        ctx.lineTo(cx(stroke.x1), cy(stroke.y1));
+      if (tool === 'line') {
+        ctx.moveTo(cx(shapeFrom.x0), cy(shapeFrom.y0));
+        ctx.lineTo(cx(shapeFrom.x1), cy(shapeFrom.y1));
       } else {
-        const xa = Math.min(stroke.x0, stroke.x1) * zoom;
-        const ya = (gridH - Math.max(stroke.y0, stroke.y1) - 1) * zoom;
-        const w = (Math.abs(stroke.x1 - stroke.x0) + 1) * zoom;
-        const h = (Math.abs(stroke.y1 - stroke.y0) + 1) * zoom;
+        const xa = Math.min(shapeFrom.x0, shapeFrom.x1) * zoom;
+        const ya = (gridH - Math.max(shapeFrom.y0, shapeFrom.y1) - 1) * zoom;
+        const w = (Math.abs(shapeFrom.x1 - shapeFrom.x0) + 1) * zoom;
+        const h = (Math.abs(shapeFrom.y1 - shapeFrom.y0) + 1) * zoom;
         ctx.strokeRect(xa + 1, ya + 1, w - 2, h - 2);
       }
       ctx.stroke();
     }
-    if (marqueeRef.current && dragMode === 'marquee') {
-      const m = marqueeRef.current;
-      const xa = Math.min(m.x0, m.x1) * zoom;
-      const ya = (gridH - Math.max(m.y0, m.y1) - 1) * zoom;
-      ctx.strokeStyle = gc;
+
+    // marquee (drag, or keyboard anchor for select)
+    const mq = marquee ?? (kbAnchor && tool === 'select' ? { x0: kbAnchor.x, y0: kbAnchor.y, x1: cursor.x, y1: cursor.y } : null);
+    if (mq) {
+      const xa = Math.min(mq.x0, mq.x1) * zoom;
+      const ya = (gridH - Math.max(mq.y0, mq.y1) - 1) * zoom;
+      ctx.strokeStyle = cText;
       ctx.setLineDash([4, 3]);
-      ctx.strokeRect(xa, ya, (Math.abs(m.x1 - m.x0) + 1) * zoom, (Math.abs(m.y1 - m.y0) + 1) * zoom);
+      ctx.lineWidth = 1;
+      ctx.strokeRect(xa + 0.5, ya + 0.5, (Math.abs(mq.x1 - mq.x0) + 1) * zoom - 1, (Math.abs(mq.y1 - mq.y0) + 1) * zoom - 1);
       ctx.setLineDash([]);
     }
-  }, [zoom, gridW, gridH, pixel, sel, stroke, ui.showGrid, ui.tool, ui.overlayGlyphId, doc, glyph, currentBitmap, dragMode]);
+    ctx.restore();
 
-  useEffect(() => {
-    draw();
-  }, [draw]);
+    // --- rulers: exact column numbers (top) and row numbers from the top (left)
+    const step = zoom >= 14 ? 1 : zoom >= 8 ? 2 : zoom >= 5 ? 5 : 10;
+    const cursorScreenRow = gridH - 1 - cursor.y;
+    ctx.font = '9px ui-monospace, monospace';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = cDim;
+    for (let x = 0; x < gridW; x++) {
+      const on = x % step === 0 || x === cursor.x;
+      if (!on) continue;
+      ctx.fillStyle = x === cursor.x ? cAccent : cDim;
+      ctx.fillText(String(x), RULER + x * zoom + zoom / 2, RULER / 2);
+    }
+    ctx.textAlign = 'right';
+    for (let r = 0; r < gridH; r++) {
+      const on = r % step === 0 || r === cursorScreenRow;
+      if (!on) continue;
+      ctx.fillStyle = r === cursorScreenRow ? cAccent : cDim;
+      ctx.fillText(String(r), RULER - 3, RULER + r * zoom + zoom / 2);
+    }
+    ctx.strokeStyle = cGrid;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(RULER + 0.5, 0);
+    ctx.lineTo(RULER + 0.5, ch);
+    ctx.moveTo(0, RULER + 0.5);
+    ctx.lineTo(cw, RULER + 0.5);
+    ctx.stroke();
+  }, [tick, zoom, gridW, gridH, pixel, baseBitmap, sel, stroke, marquee, cursor, hover, kbAnchor, ui.showGrid, tool, ui.overlayGlyphId, doc, glyph, slot]);
 
-  // mini previews (actual size + enlarged)
+  // mini previews: actual size, enlarged, LED matrix
   useEffect(() => {
-    const bm = currentBitmap();
-    if (!bm) return;
-    const render = (canvas: HTMLCanvasElement | null, scale: number) => {
+    if (!baseBitmap) return;
+    const bm = liveRef.current ?? baseBitmap;
+    const cellPaint = (canvas: HTMLCanvasElement | null, scale: number) => {
       if (!canvas) return;
       canvas.width = bm.width * scale;
       canvas.height = bm.height * scale;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--text').trim() || '#111';
+      ctx.fillStyle = css('--text', '#111');
       for (let y = 0; y < bm.height; y++) {
         for (let x = 0; x < bm.width; x++) {
           if (bm.get(x, y)) ctx.fillRect(x * scale, (bm.height - 1 - y) * scale, scale, scale);
         }
       }
     };
-    render(actualRef.current, 1);
+    cellPaint(actualRef.current, 1);
     const bigScale = Math.max(1, Math.floor(72 / Math.max(bm.width, bm.height)));
-    render(bigRef.current, bigScale);
-  }, [baseBitmap, currentBitmap, gridW, gridH]);
+    cellPaint(bigRef.current, bigScale);
 
-  // ------------------------------------------------------------ interaction
-  const cellFromEvent = (e: React.PointerEvent): { x: number; y: number } => {
-    const rect = canvasRef.current!.getBoundingClientRect();
-    const x = Math.floor((e.clientX - rect.left) / zoom);
-    const y = gridH - 1 - Math.floor((e.clientY - rect.top) / zoom);
-    return { x, y };
-  };
+    const led = ledRef.current;
+    if (led) {
+      const dot = Math.max(3, Math.floor(160 / Math.max(bm.width, bm.height)));
+      led.width = bm.width * dot + 4;
+      led.height = bm.height * dot + 4;
+      const ctx = led.getContext('2d');
+      if (!ctx) return;
+      ctx.fillStyle = '#0b0d10';
+      ctx.fillRect(0, 0, led.width, led.height);
+      const r = dot * 0.36;
+      for (let y = 0; y < bm.height; y++) {
+        for (let x = 0; x < bm.width; x++) {
+          const on = bm.get(x, y) === 1;
+          const cx = 2 + x * dot + dot / 2;
+          const cy = 2 + (bm.height - 1 - y) * dot + dot / 2;
+          ctx.beginPath();
+          ctx.arc(cx, cy, r, 0, Math.PI * 2);
+          if (on) {
+            ctx.shadowColor = '#ff6a2b';
+            ctx.shadowBlur = dot >= 6 ? dot * 0.7 : 0;
+            ctx.fillStyle = '#ff6a2b';
+          } else {
+            ctx.shadowBlur = 0;
+            ctx.fillStyle = '#23262e';
+          }
+          ctx.fill();
+        }
+      }
+      ctx.shadowBlur = 0;
+    }
+  }, [tick, baseBitmap, gridW, gridH]);
 
-  const onPointerDown = (e: React.PointerEvent) => {
-    if (!pixel || !baseBitmap) return;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    canvasRef.current?.focus();
-    const cell = cellFromEvent(e);
+  // ------------------------------------------------------------ pointer
+  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!pixel || !baseBitmap || (e.button !== 0 && e.button !== 2)) return;
+    const c = cellAt(e);
+    if (!c.inside) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    wrapRef.current?.focus();
+    const right = e.button === 2;
+    const cell: Cell = { x: c.x, y: c.y };
+    setCursor(cell);
 
-    // moving an existing selection?
-    if (sel && ui.tool === 'select' && cell.x >= sel.x && cell.x < sel.x + sel.bm.width && cell.y >= sel.y && cell.y < sel.y + sel.bm.height) {
-      setDragMode('move');
-      moveRef.current = { startX: cell.x, startY: cell.y, origX: sel.x, origY: sel.y };
+    if (tool === 'select' && sel && inRect(sel, cell)) {
+      dragRef.current = { kind: 'move', startX: cell.x, startY: cell.y, origX: sel.x, origY: sel.y, x: sel.x, y: sel.y };
       return;
     }
 
-    liveRef.current = baseBitmap.clone();
-    const bm = liveRef.current;
-
-    switch (ui.tool) {
+    switch (tool) {
       case 'pencil':
       case 'eraser': {
-        const v = ui.tool === 'pencil' ? 1 : 0;
-        // erase area under a floating selection first
-        if (sel && ui.tool === 'pencil') applySelectionTo(bm);
-        bm.set(cell.x, cell.y, v);
-        lastCellRef.current = cell;
-        setDragMode('draw');
+        const value = tool === 'eraser' || right ? 0 : 1;
+        const work = withSel(baseBitmap);
+        if (sel) setSel(null);
+        work.set(cell.x, cell.y, value);
+        liveRef.current = work;
+        dragRef.current = { kind: 'paint', value, last: cell, label: value ? 'Draw' : 'Erase' };
+        bump();
         break;
       }
-      case 'fill': {
-        if (sel) applySelectionTo(bm);
-        bm.floodFill(cell.x, cell.y, bm.get(cell.x, cell.y) ? 0 : 1);
-        commitBitmap(bm, 'Fill');
-        liveRef.current = null;
+      case 'fill':
+        floodAt(cell, right);
         break;
-      }
       case 'line':
-      case 'rect':
-        setStroke({ x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y });
-        setDragMode('draw');
+      case 'rect': {
+        const value = right ? 0 : 1;
+        dragRef.current = { kind: 'shape', value, start: cell, cur: cell };
+        setStroke({ x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y, value });
         break;
-      case 'select':
-        marqueeRef.current = { x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y };
-        setDragMode('marquee');
-        break;
-    }
-    draw();
-  };
-
-  /** Burn the floating selection into a bitmap at its position. */
-  const applySelectionTo = (bm: Bitmap) => {
-    if (!sel) return;
-    bm.paste(sel.bm, sel.x, sel.y, 'or');
-    setSel(null);
-  };
-
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!pixel || dragMode === 'none') return;
-    const cell = cellFromEvent(e);
-    const clamp = (c: { x: number; y: number }) => ({
-      x: Math.max(0, Math.min(gridW - 1, c.x)),
-      y: Math.max(0, Math.min(gridH - 1, c.y)),
-    });
-    const c = clamp(cell);
-
-    if (dragMode === 'move' && sel && moveRef.current) {
-      const dx = c.x - moveRef.current.startX;
-      const dy = c.y - moveRef.current.startY;
-      setSel({ ...sel, x: moveRef.current.origX + dx, y: moveRef.current.origY + dy });
-      return;
-    }
-    if (dragMode === 'marquee' && marqueeRef.current) {
-      marqueeRef.current = { ...marqueeRef.current, x1: c.x, y1: c.y };
-      draw();
-      return;
-    }
-    if (ui.tool === 'line' || ui.tool === 'rect') {
-      setStroke((s) => (s ? { ...s, x1: c.x, y1: c.y } : s));
-      return;
-    }
-    // pencil / eraser drag
-    const bm = liveRef.current;
-    if (bm && lastCellRef.current) {
-      bm.line(lastCellRef.current.x, lastCellRef.current.y, c.x, c.y, ui.tool === 'pencil' ? 1 : 0);
-      lastCellRef.current = c;
-      draw();
-    }
-  };
-
-  const onPointerUp = (e: React.PointerEvent) => {
-    try {
-      (e.target as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch {
-      /* ignore */
-    }
-    if (dragMode === 'move' && sel) {
-      // commit move into the bitmap
-      const bm = baseBitmap!.clone();
-      bm.paste(sel.bm, sel.x, sel.y, 'or');
-      // clear old footprint: re-extract is complex; simply OR-merge (documented)
-      commitBitmap(bm, 'Move selection');
-      setSel(null);
-    } else if (dragMode === 'marquee' && marqueeRef.current) {
-      const m = marqueeRef.current;
-      const xa = Math.min(m.x0, m.x1);
-      const ya = Math.min(m.y0, m.y1);
-      const w = Math.abs(m.x1 - m.x0) + 1;
-      const h = Math.abs(m.y1 - m.y0) + 1;
-      const extracted = baseBitmap!.extract(xa, ya, w, h);
-      if (extracted.count() > 0) {
-        // cut the selected pixels out of the base
-        const bm = baseBitmap!.clone();
-        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (extracted.get(x, y)) bm.set(xa + x, ya + y, 0);
-        commitBitmap(bm, 'Select pixels');
-        setSel({ bm: extracted, x: xa, y: ya });
       }
-      marqueeRef.current = null;
-    } else if (dragMode === 'draw' && liveRef.current && (ui.tool === 'pencil' || ui.tool === 'eraser')) {
-      if (!liveRef.current.equals(baseBitmap!)) commitBitmap(liveRef.current, ui.tool === 'pencil' ? 'Draw' : 'Erase');
-      liveRef.current = null;
-    } else if (dragMode === 'draw' && stroke && (ui.tool === 'line' || ui.tool === 'rect')) {
-      const bm = baseBitmap!.clone();
-      if (ui.tool === 'line') bm.line(stroke.x0, stroke.y0, stroke.x1, stroke.y1, 1);
-      else bm.rect(stroke.x0, stroke.y0, stroke.x1, stroke.y1, 1, false);
-      commitBitmap(bm, ui.tool === 'line' ? 'Line' : 'Rectangle');
-      setStroke(null);
-      liveRef.current = null;
+      case 'select':
+        dragRef.current = { kind: 'marquee', start: cell, cur: cell };
+        setMarquee({ x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y });
+        break;
     }
-    setDragMode('none');
-    lastCellRef.current = null;
   };
 
-  // ----------------------------------------------------------------- actions
+  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!pixel) return;
+    const c = cellAt(e);
+    setHover(c.inside ? { x: c.x, y: c.y } : null);
+    const d = dragRef.current;
+    if (!d) return;
+    const cell = clampCell(c);
+    switch (d.kind) {
+      case 'paint': {
+        const bm = liveRef.current;
+        if (bm) bm.line(d.last.x, d.last.y, cell.x, cell.y, d.value);
+        d.last = cell;
+        bump();
+        break;
+      }
+      case 'shape':
+        d.cur = cell;
+        setStroke((s) => (s ? { ...s, x1: cell.x, y1: cell.y } : s));
+        break;
+      case 'marquee':
+        d.cur = cell;
+        setMarquee({ x0: d.start.x, y0: d.start.y, x1: cell.x, y1: cell.y });
+        break;
+      case 'move': {
+        const nx = d.origX + (c.x - d.startX);
+        const ny = d.origY + (c.y - d.startY);
+        d.x = nx;
+        d.y = ny;
+        setSel((s) => (s ? { ...s, x: nx, y: ny } : s));
+        break;
+      }
+    }
+  };
+
+  const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      /* not captured */
+    }
+    const d = dragRef.current;
+    dragRef.current = null;
+    if (!d || !baseBitmap) return;
+    switch (d.kind) {
+      case 'paint': {
+        const bm = liveRef.current;
+        liveRef.current = null;
+        if (bm && !bm.equals(baseBitmap)) commitBitmap(bm, d.label);
+        bump();
+        break;
+      }
+      case 'shape': {
+        const work = withSel(baseBitmap);
+        if (tool === 'line') work.line(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value);
+        else work.rect(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value, false);
+        commitWork(work, tool === 'line' ? 'Line' : 'Rectangle');
+        setStroke(null);
+        break;
+      }
+      case 'marquee':
+        finishMarquee(d.start, d.cur);
+        setMarquee(null);
+        break;
+      case 'move': {
+        const moved = d.x !== d.origX || d.y !== d.origY;
+        if (moved && sel) {
+          const work = baseBitmap.clone();
+          work.paste(sel.bm, d.x, d.y, 'or');
+          commitBitmap(work, 'Move selection');
+          setSel(null);
+        }
+        break;
+      }
+    }
+  };
+
+  // ------------------------------------------------------------ actions
   const transform = (label: string, fn: (bm: Bitmap) => Bitmap | void) => {
     if (!baseBitmap) return;
-    if (sel) {
-      const merged = baseBitmap.clone();
-      applySelectionToNoState(merged);
-      const out = fn(merged);
-      commitBitmap(out instanceof Bitmap ? out : merged, label);
-      setSel(null);
-    } else {
-      const bm = baseBitmap.clone();
-      const out = fn(bm);
-      commitBitmap(out instanceof Bitmap ? out : bm, label);
-    }
-  };
-  const applySelectionToNoState = (bm: Bitmap) => {
-    if (sel) bm.paste(sel.bm, sel.x, sel.y, 'or');
+    const work = withSel(baseBitmap);
+    const out = fn(work);
+    setSel(null);
+    commitBitmap(out instanceof Bitmap ? out : work, label);
   };
 
   const copySel = () => {
     if (!baseBitmap) return;
-    const merged = baseBitmap.clone();
-    if (sel) merged.paste(sel.bm, sel.x, sel.y, 'or');
-    appClipboard = sel ? sel.bm.clone() : merged;
+    appClipboard = sel ? sel.bm.clone() : baseBitmap.clone();
     toast('info', sel ? 'Selection copied.' : 'Whole grid copied.');
   };
+
   const cutSel = () => {
     if (!baseBitmap) return;
     if (sel) {
       appClipboard = sel.bm.clone();
-      const bm = baseBitmap.clone();
-      commitBitmap(bm, 'Cut selection');
       setSel(null);
+      commitBitmap(baseBitmap.clone(), 'Cut selection');
     } else {
       appClipboard = baseBitmap.clone();
-      const bm = new Bitmap(baseBitmap.width, baseBitmap.height);
-      commitBitmap(bm, 'Cut grid');
+      commitBitmap(new Bitmap(baseBitmap.width, baseBitmap.height), 'Cut grid');
     }
   };
-  const pasteSel = () => {
+
+  /** Paste the clipboard with its top-left at the cursor (opaque, overwrites its rectangle). */
+  const pasteAtCursor = () => {
     if (!appClipboard || !baseBitmap) {
       toast('warning', 'Clipboard is empty.');
       return;
     }
-    const bm = baseBitmap.clone();
     const clip = appClipboard;
-    const x = sel ? sel.x : Math.max(0, Math.floor((gridW - clip.width) / 2));
-    const y = sel ? sel.y : Math.max(0, Math.floor((gridH - clip.height) / 2));
-    if (sel) {
-      // replace selection
-      setSel({ bm: clip.clone(), x, y });
-    } else {
-      for (let yy = 0; yy < clip.height; yy++) for (let xx = 0; xx < clip.width; xx++) if (clip.get(xx, yy)) bm.set(x + xx, y + yy, 0);
-      bm.paste(clip, x, y);
-      commitBitmap(bm, 'Paste');
+    const work = withSel(baseBitmap);
+    const dx = cursor.x;
+    const dy = cursor.y - clip.height + 1;
+    for (let yy = 0; yy < clip.height; yy++) {
+      for (let xx = 0; xx < clip.width; xx++) work.set(dx + xx, dy + yy, 0);
+    }
+    work.paste(clip, dx, dy);
+    setSel(null);
+    commitBitmap(work, 'Paste');
+  };
+
+  const nudgeSelection = (dx: number, dy: number) => {
+    if (sel) setSel({ ...sel, x: sel.x + dx, y: sel.y + dy });
+  };
+
+  /** Space / Enter: act on the cell under the keyboard cursor with the current tool. */
+  const actAtCursor = (shift: boolean) => {
+    if (!baseBitmap) return;
+    switch (tool) {
+      case 'pencil':
+      case 'eraser': {
+        const value = tool === 'eraser' || shift ? 0 : 1;
+        const work = withSel(baseBitmap);
+        work.set(cursor.x, cursor.y, value);
+        commitWork(work, value ? 'Draw' : 'Erase');
+        break;
+      }
+      case 'fill':
+        floodAt(cursor, shift);
+        break;
+      case 'line':
+      case 'rect': {
+        if (!kbAnchor) {
+          setKbAnchor(cursor);
+          break;
+        }
+        const work = withSel(baseBitmap);
+        const value = shift ? 0 : 1;
+        if (tool === 'line') work.line(kbAnchor.x, kbAnchor.y, cursor.x, cursor.y, value);
+        else work.rect(kbAnchor.x, kbAnchor.y, cursor.x, cursor.y, value, false);
+        setKbAnchor(null);
+        commitWork(work, tool === 'line' ? 'Line' : 'Rectangle');
+        break;
+      }
+      case 'select':
+        if (!kbAnchor) {
+          setKbAnchor(cursor);
+          break;
+        }
+        finishMarquee(kbAnchor, cursor);
+        setKbAnchor(null);
+        break;
     }
   };
 
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if ((e.target as HTMLElement).tagName === 'INPUT') return;
+  const shiftBitmap = (dx: number, dy: number) => transform('Shift bitmap', (bm) => bm.shift(dx, dy));
+
+  const rotate = () => {
+    if (led) {
+      toast('warning', 'LED matrix glyphs keep their height — rotation would change it.');
+      return;
+    }
+    transform('Rotate 90°', (bm) => bm.rotate90());
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
-    const handled = () => e.preventDefault();
+    const handled = () => {
+      e.preventDefault();
+      // keep the global window shortcuts (undo, redo, save) from running twice
+      e.stopPropagation();
+    };
 
-    if (ctrl && key === 'z') {
-      handled();
-      undo(slot);
+    if (ctrl) {
+      if (key === 'z' && !e.shiftKey) { handled(); undo(slot); return; }
+      if (key === 'y' || (key === 'z' && e.shiftKey)) { handled(); redo(slot); return; }
+      if (key === 'c') { handled(); copySel(); return; }
+      if (key === 'x') { handled(); cutSel(); return; }
+      if (key === 'v') { handled(); pasteAtCursor(); return; }
+      if (key === 'a') { handled(); finishMarquee({ x: 0, y: 0 }, { x: gridW - 1, y: gridH - 1 }); return; }
       return;
     }
-    if (ctrl && (key === 'y' || (e.shiftKey && key === 'z'))) {
+
+    const arrows: Record<string, [number, number]> = {
+      arrowup: [0, 1],
+      arrowdown: [0, -1],
+      arrowleft: [-1, 0],
+      arrowright: [1, 0],
+    };
+    if (arrows[key]) {
       handled();
-      redo(slot);
+      const [dx, dy] = arrows[key];
+      if (sel) nudgeSelection(dx, dy);
+      else if (e.shiftKey || e.altKey) shiftBitmap(dx, dy);
+      else setCursor((c) => clampCell({ x: c.x + dx, y: c.y + dy }));
       return;
     }
-    if (ctrl && key === 'c') { handled(); copySel(); return; }
-    if (ctrl && key === 'x') { handled(); cutSel(); return; }
-    if (ctrl && key === 'v') { handled(); pasteSel(); return; }
 
-    if (key.startsWith('arrow')) {
+    if (key === ' ' || key === 'enter') {
+      // let focused buttons keep their own Space/Enter behaviour
+      if (target.tagName === 'BUTTON') return;
       handled();
-      const d = { arrowup: [0, 1], arrowdown: [0, -1], arrowleft: [-1, 0], arrowright: [1, 0] }[key]!;
-      if (sel) {
-        setSel({ ...sel, x: sel.x + d[0], y: sel.y + d[1] });
-      } else {
-        transform('Shift bitmap', (bm) => bm.shift(d[0], d[1]));
-      }
+      actAtCursor(e.shiftKey);
       return;
     }
 
     switch (key) {
+      case 't': {
+        handled();
+        if (baseBitmap) {
+          const work = withSel(baseBitmap);
+          work.toggle(cursor.x, cursor.y);
+          commitWork(work, 'Toggle pixel');
+        }
+        break;
+      }
       case 'b': case 'p': setTool(slot, 'pencil'); handled(); break;
       case 'e': setTool(slot, 'eraser'); handled(); break;
       case 'f': setTool(slot, 'fill'); handled(); break;
@@ -459,18 +728,23 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       case 'm': case 's': setTool(slot, 'select'); handled(); break;
       case 'g': toggleGridLines(slot); handled(); break;
       case 'i': transform('Invert', (bm) => bm.invert()); handled(); break;
-      case 'delete': case 'backspace': {
+      case 'delete':
+      case 'backspace': {
         handled();
-        if (sel) {
-          setSel(null);
-        } else {
-          transform('Clear grid', (bm) => bm.clear());
-        }
+        if (sel) setSel(null); // deleting a floating selection removes its pixels
+        else transform('Clear grid', (bm) => bm.clear());
         break;
       }
-      case 'escape': setSel(null); setStroke(null); handled(); break;
-      case '+': case '=': setZoom(slot, zoom + (zoom >= 16 ? 8 : 2)); handled(); break;
-      case '-': setZoom(slot, zoom - (zoom > 16 ? 8 : 2)); handled(); break;
+      case 'escape': {
+        handled();
+        if (kbAnchor) setKbAnchor(null);
+        else if (sel) commitWork(withSel(baseBitmap!), 'Place selection');
+        setStroke(null);
+        setMarquee(null);
+        break;
+      }
+      case '+': case '=': handled(); setZoom(slot, zoom + (zoom >= 16 ? 8 : 2)); break;
+      case '-': handled(); setZoom(slot, zoom - (zoom > 16 ? 8 : 2)); break;
     }
   };
 
@@ -478,32 +752,34 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     return <div className="muted">This glyph has no pixel grid. Use “Convert to pixels…” or create a pixel font.</div>;
   }
 
-  const toolBtn = (tool: typeof ui.tool, icon: string, tip: string) => (
-    <IconBtn icon={icon} tip={tip} active={ui.tool === tool} onClick={() => setTool(slot, tool)} />
+  const toolBtn = (t: Tool, icon: string, tip: string) => (
+    <IconBtn icon={icon} tip={tip} active={tool === t} onClick={() => setTool(slot, t)} />
   );
+  const info = hover ?? cursor;
+  const infoValue = baseBitmap ? (sel && inRect(sel, info) ? sel.bm.get(info.x - sel.x, info.y - sel.y) : baseBitmap.get(info.x, info.y)) : 0;
 
   return (
-    <div style={{ display: 'contents' }} onKeyDown={onKeyDown} tabIndex={0} aria-label="Pixel editor keyboard area">
+    <div style={{ display: 'contents' }} onKeyDown={onKeyDown} tabIndex={0} aria-label="Pixel editor keyboard area" ref={wrapRef}>
       <div className="editor-toolbar" role="toolbar" aria-label="Pixel tools">
-        {toolBtn('pencil', '✏️', 'Pencil — draw pixels (B)')}
+        {toolBtn('pencil', '✏️', 'Pencil — draw pixels (B). Right-drag erases.')}
         {toolBtn('eraser', '🧽', 'Eraser — remove pixels (E)')}
         {toolBtn('fill', '🪣', 'Flood fill (F)')}
         {toolBtn('line', '📏', 'Line tool (L)')}
         {toolBtn('rect', '▭', 'Rectangle tool (R)')}
-        {toolBtn('select', '⬚', 'Select / move pixels (M)')}
+        {toolBtn('select', '⬚', 'Select / move pixels (M). Ctrl+A selects all.')}
         <span className="sep" />
         <IconBtn icon="⧉" tip="Copy selection / grid (Ctrl+C)" onClick={copySel} />
         <IconBtn icon="✂" tip="Cut selection / grid (Ctrl+X)" onClick={cutSel} />
-        <IconBtn icon="📋" tip="Paste (Ctrl+V)" onClick={pasteSel} />
+        <IconBtn icon="📋" tip="Paste at the cursor (Ctrl+V)" onClick={pasteAtCursor} />
         <span className="sep" />
-        <IconBtn icon="⬅" tip="Shift bitmap left (←)" onClick={() => transform('Shift left', (bm) => bm.shift(-1, 0))} />
-        <IconBtn icon="➡" tip="Shift bitmap right (→)" onClick={() => transform('Shift right', (bm) => bm.shift(1, 0))} />
-        <IconBtn icon="⬆" tip="Shift bitmap up (↑)" onClick={() => transform('Shift up', (bm) => bm.shift(0, 1))} />
-        <IconBtn icon="⬇" tip="Shift bitmap down (↓)" onClick={() => transform('Shift down', (bm) => bm.shift(0, -1))} />
+        <IconBtn icon="⬅" tip="Shift bitmap left (Shift+←)" onClick={() => shiftBitmap(-1, 0)} />
+        <IconBtn icon="➡" tip="Shift bitmap right (Shift+→)" onClick={() => shiftBitmap(1, 0)} />
+        <IconBtn icon="⬆" tip="Shift bitmap up (Shift+↑)" onClick={() => shiftBitmap(0, 1)} />
+        <IconBtn icon="⬇" tip="Shift bitmap down (Shift+↓)" onClick={() => shiftBitmap(0, -1)} />
         <span className="sep" />
         <IconBtn icon="⇋" tip="Flip horizontal" onClick={() => transform('Flip horizontal', (bm) => bm.flipHorizontal())} />
         <IconBtn icon="⇅" tip="Flip vertical" onClick={() => transform('Flip vertical', (bm) => bm.flipVertical())} />
-        <IconBtn icon="⟳" tip="Rotate 90° counter-clockwise" onClick={() => transform('Rotate 90°', (bm) => bm.rotate90())} />
+        <IconBtn icon="⟳" tip={led ? 'Rotation disabled for LED matrix fonts (height is fixed)' : 'Rotate 90° counter-clockwise'} onClick={rotate} disabled={!!led} />
         <IconBtn icon="◑" tip="Invert pixels (I)" onClick={() => transform('Invert', (bm) => bm.invert())} />
         <IconBtn icon="🗑" tip="Clear grid (Delete)" onClick={() => transform('Clear', (bm) => bm.clear())} />
         <span className="sep" />
@@ -531,8 +807,23 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
           </select>
         </label>
         <span className="spacer" />
-        <Btn tip="Change the grid size (crop/pad or resample)" onClick={() => useStore.getState().openModal({ type: 'resizeGrid', slot, glyphId: glyph.id })}>
-          Grid {gridW}×{gridH}…
+        {needsSnap && (
+          <Btn
+            kind="primary"
+            tip="This glyph is not on the LED matrix grid yet. Snap it (vector outlines are rasterized)."
+            onClick={() => commit(slot, 'Snap to LED grid', (d) => snapGlyphToLed(d, glyph.id))}
+          >
+            Snap to LED grid
+          </Btn>
+        )}
+        <Btn tip="Enter the exact pixels as text art (#/.) or as LED column bytes (0x3E, …)" onClick={() => openModal({ type: 'pixelCode', slot, glyphId: glyph.id })}>
+          ⌨ Pixel code…
+        </Btn>
+        <Btn
+          tip={led ? 'Change the glyph width (the matrix height is fixed)' : 'Change the grid size (crop/pad or resample)'}
+          onClick={() => openModal({ type: 'resizeGrid', slot, glyphId: glyph.id })}
+        >
+          {led ? `Width ${gridW} px…` : `Grid ${gridW}×${gridH}…`}
         </Btn>
       </div>
 
@@ -540,14 +831,24 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
         <div className="editor-canvas-wrap">
           <canvas
             ref={canvasRef}
-            width={gridW * zoom}
-            height={gridH * zoom}
+            width={gridW * zoom + RULER}
+            height={gridH * zoom + RULER}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
-            aria-label={`Pixel grid, ${gridW} by ${gridH}`}
+            onPointerLeave={() => setHover(null)}
+            onContextMenu={(e) => e.preventDefault()}
+            aria-label={`Pixel grid, ${gridW} columns by ${gridH} rows${led ? `, LED matrix ${ledLabel(led)}` : ''}`}
           />
+        </div>
+        <div className="pixel-status small" aria-live="polite">
+          <span className="chip">{hover ? 'pointer' : 'cursor'}: col {info.x} · row {gridH - 1 - info.y} from top</span>
+          <span className="chip">{infoValue ? 'on' : 'off'}</span>
+          <span className="muted">
+            cursor col {cursor.x}, row {gridH - 1 - cursor.y} · arrows move · Space/Enter act · Shift+Space erases · T toggles
+          </span>
+          {kbAnchor && <span className="chip warn-chip">{tool} started at col {kbAnchor.x}, row {gridH - 1 - kbAnchor.y} — arrows extend it, Space finishes, Esc cancels</span>}
         </div>
         <div className="editor-preview-strip">
           <div className="mini-preview">
@@ -558,7 +859,12 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
             <canvas ref={bigRef} />
             <div className="cap">enlarged</div>
           </div>
+          <div className="mini-preview">
+            <canvas ref={ledRef} />
+            <div className="cap">LED matrix</div>
+          </div>
           <div className="small muted">
+            {led ? <span className="chip led-chip">LED {ledLabel(led)} · {led.cellUnits} units/px · spacing {led.spacing}px</span> : null}{' '}
             advance {glyph.advanceWidth} · LSB {glyph.leftSideBearing} · cell {pixel.unitsPerCell}u · baseline row {pixel.baselineRow}
           </div>
         </div>

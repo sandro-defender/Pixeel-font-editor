@@ -13,9 +13,10 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | Workspaces | Two independent fonts (Font A / Font B), side-by-side comparison, per-font export |
 | Import | `.ttf` via file picker or drag & drop (`.otf`/CFF is converted to quadratic curves) |
 | Glyph browser | Searchable grid with previews, Unicode values and names; create / duplicate / delete; re-assign Unicode with conflict validation; `.notdef` is always preserved; unmapped glyphs are visually distinct |
-| Pixel editor | 8×8, 16×16, 32×32 or custom grids (≤128); pencil, eraser, fill, line, rectangle, selection; copy/cut/paste/move; shift, flip, rotate, invert, clear; undo/redo; zoom with grid lines; reference overlay for tracing; keyboard shortcuts; touch/pointer drawing; live actual-size + enlarged previews; baseline/ascent/descent/origin/advance guides; explicit crop/pad vs resample when resizing a grid |
+| Pixel editor | 8×8, 16×16, 32×32 or custom grids (≤128); pencil, eraser, fill, line, rectangle, selection; copy/cut/paste/move; shift, flip, rotate, invert, clear; undo/redo; zoom with grid lines; **keyboard cursor** (arrows move it, Space paints, Shift+Space erases, T toggles); **hover coordinate readout** and **index rulers**; **right-drag erases**; reference overlay for tracing; touch/pointer drawing; live actual-size + enlarged previews; baseline/ascent/descent/origin/advance guides; explicit crop/pad vs resample when resizing a grid; text-art and LED column-byte entry (*Pixel code…*) |
+| LED matrix fonts | Optional exact-pixel mode per font: fixed grid height, one integer unit size per lit pixel, glyph origins on whole-pixel boundaries, advance = (width + spacing) × pixel size; an LED dot preview; *Snap to LED grid* for vector glyphs; export checks that verify every glyph (errors for off-grid data, warnings for advances) |
 | Outline editor | Imported vector glyphs keep their original outlines; select contours & points, move points, reverse or delete contours; edit advance width and side bearings; composite glyphs detected and preserved (or explicitly flattened); explicit "convert to pixels" with preview and loss-of-detail warning; revert to the original outline |
-| Transfer A↔B | Copy one or many glyphs either direction; preserve source metrics or adapt; optional proportional scaling by units-per-em; baseline-aligned preview; collision handling (replace / skip / reassign); confirmation step; single undo step |
+| Transfer A↔B | **Copy** or **Move** one or many glyphs either direction (Move removes them from the source after copying; `.notdef` is never removed; skipped glyphs stay put); drag glyph cards onto the A/B tabs; preserve source metrics or adapt; optional proportional scaling by units-per-em; baseline-aligned preview; collision handling (replace / skip / reassign); confirmation step; one undo step reverts both fonts for a move |
 | Metadata & licensing | Full name-table editor (family, style, full/PostScript name, version, author, copyright, description, manufacturer, URLs); license editor with custom text or the **official SIL OFL 1.1 template** (editable holder + Reserved Font Names); `LICENSE.txt` export; license embedded in the exported name table; imported copyright/license preserved by default and never replaced silently |
 | Preview | Live text preview rendered from the *currently edited* font (including unsaved changes), custom text/size/letter-spacing, samples for Latin, Georgian, numbers, punctuation |
 | Persistence | Project files (`.pixeel.json`) with both fonts + metadata + grids + settings; automatic IndexedDB recovery snapshot restored after refresh |
@@ -44,7 +45,7 @@ npm run dev          # http://localhost:5173
 ### Tests
 
 ```bash
-npm test             # 58 unit/integration tests (vitest)
+npm test             # 77 unit/integration tests (vitest)
 npm run verify:pages # builds with a subpath base and serves it under /test-repo/
 ```
 
@@ -52,7 +53,11 @@ The test suite covers: create → draw → export → re-import; 8/16/32/custom 
 holes and disconnected pixels; importing a real OFL-licensed font (Lato);
 hinting/GPOS preservation; composite handling; transfers between different
 units-per-em; collisions + undo/redo; metadata & OFL round trips; project
-save/load and IndexedDB refresh recovery; GitHub Pages subpath serving.
+save/load and IndexedDB refresh recovery; GitHub Pages subpath serving;
+LED matrix validation (exact pixels, advance warnings, height locking), text-art
+and column-byte round trips, LED conform on transfer, move transfers with one
+linked undo/redo and collision-skipped glyphs, and the pixel editor's keyboard
+cursor (one undo per Ctrl+Z).
 
 ## Building
 
@@ -159,15 +164,37 @@ check the export report before downloading.
 
 ## Keyboard shortcuts (pixel editor)
 
-`B` pencil · `E` eraser · `F` fill · `L` line · `R` rectangle · `M` select/move ·
-arrows shift bitmap (or move selection) · `Ctrl+C/X/V` copy/cut/paste ·
-`Ctrl+Z` / `Ctrl+Y` undo/redo · `I` invert · `Delete` clear · `G` grid lines ·
-`+`/`−` zoom · `Esc` cancel selection · `Ctrl+S` save project.
+Arrow keys move the **keyboard cursor** (the outlined cell). With a selection they nudge
+it instead. **Shift+arrows** shift the whole bitmap by one pixel.
+
+| Key | Action |
+| --- | --- |
+| Arrow keys | Move the cursor (nudge the selection when one is active) |
+| Shift + arrows | Shift the bitmap one pixel |
+| `Space` / `Enter` | Act at the cursor with the current tool |
+| `Shift` + `Space` | Erase at the cursor |
+| `T` | Toggle the pixel under the cursor |
+| `B`/`P` pencil · `E` eraser · `F` fill · `L` line · `R` rectangle · `M`/`S` select | Tools |
+| `Ctrl+A` | Select all |
+| `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste (paste lands at the cursor) |
+| `Ctrl+Z` / `Ctrl+Y` | Undo / redo (one step per edit) |
+| `Esc` | Place a floating selection, or cancel an in-progress stroke |
+| `Delete` / `Backspace` | Delete a floating selection, or clear the grid |
+| `I` invert · `G` grid lines · `+` / `−` zoom · `Ctrl+S` save project | |
+
+Mouse: the left button paints with the current tool; **right-drag erases**. Hovering
+shows the pixel's column (from the left) and row (from the top) in the status line.
+Rulers number the columns and rows.
+
+Behaviour changed in this release: arrow keys no longer shift the bitmap by default.
+Use **Shift+arrows** for that.
 
 ## Known limitations
 
 - One Unicode code point per glyph (fonts with multi-unicode glyphs keep the first mapping; noted on import).
-- Vertical metrics editing is limited to ascent/descent/lineGap/unitsPerEm.
+- Vertical metrics editing is limited to ascent/descent/lineGap/unitsPerEm. LED matrix fonts derive these from the matrix, so they are read-only there.
+- LED matrix mode fixes the grid height for every glyph. Switching a font into LED mode rasterizes vector glyphs onto the grid, so their outlines are replaced by pixels (undo reverts this).
+- Transfers keep each standard pixel glyph's own grid size. Only an LED destination resamples glyphs onto its grid. Resampling uses nearest-neighbour, which can alias.
 - Pixel-grid placement per glyph is linear (uniform cell size).
 - Preview fonts are rebuilt asynchronously; very large fonts can take a couple of seconds.
 - The glyph browser renders model previews (fast); the text preview uses the real rebuilt TTF.

@@ -6,7 +6,7 @@ import { GlyphBrowser } from './components/GlyphBrowser';
 import { EditorPanel } from './components/EditorPanel';
 import { SidePanel } from './components/SidePanel';
 import { BusyOverlay, Btn, Toasts } from './components/ui';
-import { AddGlyphDialog, ExportDialog, HelpDialog, MetadataDialog, NewFontDialog, RasterizeDialog, ResizeGridDialog, TransferDialog } from './components/dialogs';
+import { AddGlyphDialog, ExportDialog, HelpDialog, LedMatrixDialog, MetadataDialog, NewFontDialog, PixelCodeDialog, RasterizeDialog, ResizeGridDialog, TransferDialog } from './components/dialogs';
 import { importFontFile, openProjectFile, saveProjectFile } from './services/fileActions';
 import { discardRecovery, peekRecovery, restoreRecovery, saveRecoveryNow, scheduleRecoverySave } from './services/persistence';
 import { releaseAllPreviews } from './services/previewFont';
@@ -88,10 +88,12 @@ function Modals() {
     case 'newFont': return <NewFontDialog />;
     case 'metadata': return <MetadataDialog slot={useStore.getState().active} />;
     case 'export': return <ExportDialog slot={modal.slot} />;
-    case 'transfer': return <TransferDialog from={modal.from} glyphIds={modal.glyphIds} />;
+    case 'transfer': return <TransferDialog from={modal.from} glyphIds={modal.glyphIds} mode={modal.mode} />;
     case 'resizeGrid': return <ResizeGridDialog slot={modal.slot} glyphId={modal.glyphId} />;
     case 'rasterize': return <RasterizeDialog slot={modal.slot} glyphId={modal.glyphId} />;
     case 'addGlyph': return <AddGlyphDialog slot={modal.slot} />;
+    case 'pixelCode': return <PixelCodeDialog slot={modal.slot} glyphId={modal.glyphId} />;
+    case 'ledMatrix': return <LedMatrixDialog slot={modal.slot} />;
     case 'help': return <HelpDialog />;
     default: return null;
   }
@@ -169,6 +171,8 @@ export default function App() {
   // global shortcuts
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // a component (e.g. the pixel editor) already handled this key
+      if (e.defaultPrevented) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       const s = useStore.getState();

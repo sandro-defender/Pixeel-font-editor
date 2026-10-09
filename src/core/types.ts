@@ -99,6 +99,25 @@ export interface FontSourceInfo {
   importedAt: number;
 }
 
+/**
+ * LED matrix ("exact pixel") settings. When set on a font, every glyph lives
+ * on the same fixed grid: `rows` LED pixels tall, each pixel exactly
+ * `cellUnits` font units square, baseline on a whole pixel row, and advances
+ * that are whole numbers of pixels. See src/core/ledMatrix.ts.
+ */
+export interface LedMatrixSpec {
+  /** Matrix height in LED pixels (every glyph has this many rows). */
+  rows: number;
+  /** Default glyph width in LED pixels. */
+  cols: number;
+  /** Blank pixel columns inserted after every glyph (letter spacing). */
+  spacing: number;
+  /** Font units per LED pixel (integer). unitsPerEm = rows × cellUnits. */
+  cellUnits: number;
+  /** Pixel rows below the baseline (0 = baseline on the bottom row). */
+  descentRows: number;
+}
+
 export interface FontDoc {
   /** Stable id of the font instance (used to key preserved source data). */
   fontId: string;
@@ -112,6 +131,8 @@ export interface FontDoc {
    * (used to preserve GPOS/kern/hinting on export). Null for new fonts.
    */
   sourceRef: string | null;
+  /** Present (non-null) when the font is an LED matrix / exact-pixel font. */
+  ledMatrix?: LedMatrixSpec | null;
 }
 
 export interface WorkspaceSettings {
@@ -134,6 +155,8 @@ export interface NewFontOptions {
   gridHeight: number;
   /** Fraction of the grid (rows) reserved below the baseline, 0..0.5 */
   descentRows?: number;
+  /** When set, creates an LED matrix (exact-pixel) font instead. */
+  led?: LedMatrixSpec;
 }
 
 let idCounter = 0;

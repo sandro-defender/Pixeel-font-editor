@@ -5,6 +5,7 @@ import { emptyGlyphDoc } from './fontCodec';
 import type { FontDoc, GlyphDoc, NewFontOptions, PixelData } from './types';
 import { makeId } from './types';
 import { suggestGlyphName, QUICK_RANGES } from './unicodeNames';
+import { ledAdvance, ledLayout, ledMetrics, normalizeLedSpec, spaceWidthFor } from './ledMatrix';
 
 export const DEFAULT_CELL_TARGET = 1024; // aim for 1024 unitsPerEm
 
@@ -34,6 +35,7 @@ export function computePixelLayout(gridWidth: number, gridHeight: number, descen
 }
 
 export function createNewFont(opts: NewFontOptions): FontDoc {
+  if (opts.led) return createLedFont(opts);
   const layout = computePixelLayout(opts.gridWidth, opts.gridHeight, opts.descentRows);
   const family = opts.familyName.trim() || 'Untitled Pixel';
   const style = opts.styleName.trim() || 'Regular';
@@ -69,6 +71,44 @@ export function createNewFont(opts: NewFontOptions): FontDoc {
       importedAt: Date.now(),
     },
     sourceRef: null,
+  };
+}
+
+/** New LED matrix (exact-pixel) font: fixed rows, whole-pixel advances. */
+export function createLedFont(opts: NewFontOptions): FontDoc {
+  const spec = normalizeLedSpec(opts.led!);
+  const layout = ledLayout(spec);
+  const family = opts.familyName.trim() || 'Untitled LED';
+  const style = opts.styleName.trim() || 'Regular';
+  const notdef = emptyGlyphDoc('.notdef', Math.round(ledAdvance(spec, spec.cols) / 2));
+  notdef.srcIndex = 0;
+  const spaceWidth = spaceWidthFor(spec);
+  const space = makePixelGlyph(0x20, spaceWidth, spec.rows, { ...layout, defaultAdvance: ledAdvance(spec, spaceWidth) }, true);
+  space.advanceWidth = ledAdvance(spec, spaceWidth);
+  return {
+    fontId: makeId('f'),
+    meta: deriveMetaFields({
+      ...EMPTY_META,
+      fontFamily: family,
+      fontSubFamily: style,
+      version: 'Version 1.000',
+      manufacturer: 'Pixeel font editor',
+      description: `LED matrix font, ${spec.cols}×${spec.rows} pixels per glyph, exact pixel outlines (${spec.cellUnits} font units per LED pixel).`,
+    }),
+    metrics: ledMetrics(spec),
+    glyphs: [notdef, space],
+    source: {
+      fileName: `${makePostScriptName(family, style)}.pixeel`,
+      format: 'created',
+      tables: [],
+      hasHinting: false,
+      hasKerning: false,
+      hasComposites: false,
+      numGlyphs: 2,
+      importedAt: Date.now(),
+    },
+    sourceRef: null,
+    ledMatrix: spec,
   };
 }
 
@@ -118,7 +158,7 @@ export function basicSetGlyphs(doc: FontDoc): GlyphDoc[] {
   const height = template?.height ?? 8;
   layout.unitsPerCell = template?.unitsPerCell ?? doc.metrics.unitsPerEm / height;
   layout.baselineRow = template?.baselineRow ?? 2;
-  layout.defaultAdvance = width * layout.unitsPerCell;
+  layout.defaultAdvance = doc.ledMatrix ? ledAdvance(doc.ledMatrix, width) : width * layout.unitsPerCell;
 
   const points = QUICK_RANGES.flatMap((r) => r.points).filter((cp) => !existing.has(cp));
   const seen = new Set<number>();

@@ -3,6 +3,12 @@ import { create } from 'zustand';
 import type { FontDoc, GlyphDoc, Slot, WorkspaceSettings } from '../core/types';
 import { makeId } from '../core/types';
 
+/** Keep the glyph selection valid after a document swap (undo, redo, linked edits). */
+function keepGlyphSelection(ui: FontSlotUI, doc: FontDoc): FontSlotUI {
+  if (ui.glyphId && doc.glyphs.some((g) => g.id === ui.glyphId)) return ui;
+  return { ...ui, glyphId: doc.glyphs[0]?.id ?? null };
+}
+
 export const HISTORY_LIMIT = 50;
 
 export interface Toast {
@@ -17,11 +23,23 @@ export type ModalState =
   | { type: 'openProject' }
   | { type: 'metadata' }
   | { type: 'export'; slot: Slot }
-  | { type: 'transfer'; from: Slot; glyphIds: string[] }
+  | { type: 'transfer'; from: Slot; glyphIds: string[]; mode?: TransferMode }
   | { type: 'resizeGrid'; slot: Slot; glyphId: string }
   | { type: 'rasterize'; slot: Slot; glyphId: string }
   | { type: 'addGlyph'; slot: Slot }
+  | { type: 'pixelCode'; slot: Slot; glyphId: string }
+  | { type: 'ledMatrix'; slot: Slot }
   | { type: 'help' };
+
+/** Copy leaves the source untouched; move also removes the copied glyphs from the source. */
+export type TransferMode = 'copy' | 'move';
+
+/** One undo/redo step. Entries sharing a `group` are undone/redone together (cross-font moves). */
+export interface HistoryEntry {
+  doc: FontDoc;
+  group: string | null;
+  label: string;
+}
 
 interface FontSlotUI {
   glyphId: string | null;
@@ -49,8 +67,8 @@ export interface AppStore {
   previewVersion: number;
   lastProjectSavedAt: number | null;
 
-  past: Record<Slot, FontDoc[]>;
-  future: Record<Slot, FontDoc[]>;
+  past: Record<Slot, HistoryEntry[]>;
+  future: Record<Slot, HistoryEntry[]>;
 
   // --- core actions
   setActive: (slot: Slot) => void;
@@ -66,6 +84,12 @@ export interface AppStore {
   // --- font lifecycle
   loadFont: (slot: Slot, doc: FontDoc | null, fileName: string | null) => void;
   commit: (slot: Slot, label: string, updater: (doc: FontDoc) => FontDoc) => void;
+  /**
+   * Apply several font edits as ONE undo step. Each edit receives the current
+   * doc of its slot; a failing updater aborts everything. Returns true when
+   * anything changed.
+   */
+  commitLinked: (label: string, edits: Array<{ slot: Slot; updater: (doc: FontDoc) => FontDoc }>) => boolean;
   undo: (slot: Slot) => void;
   redo: (slot: Slot) => void;
   canUndo: (slot: Slot) => boolean;
@@ -167,42 +191,104 @@ export const useStore = create<AppStore>((set, get) => ({
     set({
       fonts: { ...s.fonts, [slot]: next },
       dirty: { ...s.dirty, [slot]: true },
-      past: { ...s.past, [slot]: [...s.past[slot].slice(-(HISTORY_LIMIT - 1)), doc] },
+      past: { ...s.past, [slot]: [...s.past[slot].slice(-(HISTORY_LIMIT - 1)), { doc, group: null, label }] },
       future: { ...s.future, [slot]: [] },
       previewVersion: s.previewVersion + 1,
     });
   },
 
+  commitLinked: (label, edits) => {
+    const s = get();
+    const befores: Partial<Record<Slot, FontDoc>> = {};
+    const afters: Partial<Record<Slot, FontDoc>> = {};
+    for (const edit of edits) {
+      const current = afters[edit.slot] ?? s.fonts[edit.slot];
+      if (!current) {
+        s.toast('error', `Font ${edit.slot} is empty.`);
+        return false;
+      }
+      if (!befores[edit.slot]) befores[edit.slot] = current;
+      try {
+        afters[edit.slot] = edit.updater(current);
+      } catch (err) {
+        s.toast('error', err instanceof Error ? err.message : String(err));
+        return false;
+      }
+    }
+    const changed = (Object.keys(afters) as Slot[]).filter((sl) => afters[sl] !== befores[sl]);
+    if (changed.length === 0) return false;
+
+    const group = makeId('h');
+    const fonts = { ...s.fonts };
+    const past = { ...s.past };
+    const future = { ...s.future };
+    const dirty = { ...s.dirty };
+    const ui = { ...s.ui };
+    for (const sl of changed) {
+      fonts[sl] = afters[sl]!;
+      past[sl] = [...past[sl].slice(-(HISTORY_LIMIT - 1)), { doc: befores[sl]!, group, label }];
+      future[sl] = [];
+      dirty[sl] = true;
+      ui[sl] = keepGlyphSelection(ui[sl], afters[sl]!);
+    }
+    set({ fonts, past, future, dirty, ui, previewVersion: s.previewVersion + 1 });
+    return true;
+  },
+
   undo: (slot) => {
     const s = get();
-    const doc = s.fonts[slot];
-    const past = s.past[slot];
-    if (!doc || past.length === 0) return;
-    const prev = past[past.length - 1];
-    set({
-      fonts: { ...s.fonts, [slot]: prev },
-      past: { ...s.past, [slot]: past.slice(0, -1) },
-      future: { ...s.future, [slot]: [...s.future[slot], doc].slice(-HISTORY_LIMIT) },
-      dirty: { ...s.dirty, [slot]: true },
-      previewVersion: s.previewVersion + 1,
-      ui: { ...s.ui, [slot]: { ...s.ui[slot], glyphId: prev.glyphs.some((g) => g.id === s.ui[slot].glyphId) ? s.ui[slot].glyphId : prev.glyphs[0]?.id ?? null } },
-    });
+    const current = s.fonts[slot];
+    const stack = s.past[slot];
+    if (!current || stack.length === 0) return;
+    const entry = stack[stack.length - 1];
+    const fonts = { ...s.fonts, [slot]: entry.doc };
+    const past = { ...s.past, [slot]: stack.slice(0, -1) };
+    const future = { ...s.future, [slot]: [...s.future[slot], { doc: current, group: entry.group, label: entry.label }].slice(-HISTORY_LIMIT) };
+    const dirty = { ...s.dirty, [slot]: true };
+    const ui = { ...s.ui, [slot]: keepGlyphSelection(s.ui[slot], entry.doc) };
+
+    if (entry.group) {
+      const other: Slot = slot === 'A' ? 'B' : 'A';
+      const partnerStack = s.past[other];
+      const partnerTop = partnerStack[partnerStack.length - 1];
+      const partnerDoc = s.fonts[other];
+      if (partnerTop && partnerTop.group === entry.group && partnerDoc) {
+        fonts[other] = partnerTop.doc;
+        past[other] = partnerStack.slice(0, -1);
+        future[other] = [...s.future[other], { doc: partnerDoc, group: entry.group, label: partnerTop.label }].slice(-HISTORY_LIMIT);
+        dirty[other] = true;
+        ui[other] = keepGlyphSelection(s.ui[other], partnerTop.doc);
+      }
+    }
+    set({ fonts, past, future, dirty, ui, previewVersion: s.previewVersion + 1 });
   },
 
   redo: (slot) => {
     const s = get();
-    const doc = s.fonts[slot];
-    const future = s.future[slot];
-    if (!doc || future.length === 0) return;
-    const next = future[future.length - 1];
-    set({
-      fonts: { ...s.fonts, [slot]: next },
-      future: { ...s.future, [slot]: future.slice(0, -1) },
-      past: { ...s.past, [slot]: [...s.past[slot], doc].slice(-HISTORY_LIMIT) },
-      dirty: { ...s.dirty, [slot]: true },
-      previewVersion: s.previewVersion + 1,
-      ui: { ...s.ui, [slot]: { ...s.ui[slot], glyphId: next.glyphs.some((g) => g.id === s.ui[slot].glyphId) ? s.ui[slot].glyphId : next.glyphs[0]?.id ?? null } },
-    });
+    const current = s.fonts[slot];
+    const stack = s.future[slot];
+    if (!current || stack.length === 0) return;
+    const entry = stack[stack.length - 1];
+    const fonts = { ...s.fonts, [slot]: entry.doc };
+    const future = { ...s.future, [slot]: stack.slice(0, -1) };
+    const past = { ...s.past, [slot]: [...s.past[slot], { doc: current, group: entry.group, label: entry.label }].slice(-HISTORY_LIMIT) };
+    const dirty = { ...s.dirty, [slot]: true };
+    const ui = { ...s.ui, [slot]: keepGlyphSelection(s.ui[slot], entry.doc) };
+
+    if (entry.group) {
+      const other: Slot = slot === 'A' ? 'B' : 'A';
+      const partnerStack = s.future[other];
+      const partnerTop = partnerStack[partnerStack.length - 1];
+      const partnerDoc = s.fonts[other];
+      if (partnerTop && partnerTop.group === entry.group && partnerDoc) {
+        fonts[other] = partnerTop.doc;
+        future[other] = partnerStack.slice(0, -1);
+        past[other] = [...s.past[other], { doc: partnerDoc, group: entry.group, label: partnerTop.label }].slice(-HISTORY_LIMIT);
+        dirty[other] = true;
+        ui[other] = keepGlyphSelection(s.ui[other], partnerTop.doc);
+      }
+    }
+    set({ fonts, past, future, dirty, ui, previewVersion: s.previewVersion + 1 });
   },
 
   canUndo: (slot) => get().past[slot].length > 0,

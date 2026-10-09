@@ -1,9 +1,10 @@
 /** App header: workspace tabs, file actions, undo/redo, theme. */
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { useStore, workspaceName } from '../state/store';
 import type { Slot } from '../core/types';
 import { Btn, IconBtn } from './ui';
 import { importFontFile, openProjectFile, saveProjectFile } from '../services/fileActions';
+import { dragFromOther, readGlyphDrag } from './glyphDrag';
 
 export function TopBar() {
   const fonts = useStore((s) => s.fonts);
@@ -18,6 +19,7 @@ export function TopBar() {
   const redo = useStore((s) => s.redo);
   const past = useStore((s) => s.past);
   const future = useStore((s) => s.future);
+  const [dropSlot, setDropSlot] = useState<Slot | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
 
@@ -26,8 +28,26 @@ export function TopBar() {
     return (
       <button
         key={slot}
-        className={`ws-tab ${active === slot ? 'active' : ''}`}
+        className={`ws-tab ${active === slot ? 'active' : ''} ${dropSlot === slot ? 'drop-target' : ''}`}
         onClick={() => setActive(slot)}
+        onDragOver={(e) => {
+          // glyph cards dragged from the other font can be dropped here to copy them
+          if (dragFromOther(e.dataTransfer, slot)) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            if (dropSlot !== slot) setDropSlot(slot);
+          }
+        }}
+        onDragLeave={() => setDropSlot((cur) => (cur === slot ? null : cur))}
+        onDrop={(e) => {
+          const from = dragFromOther(e.dataTransfer, slot);
+          setDropSlot(null);
+          if (!from) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const ids = readGlyphDrag(e.dataTransfer, from);
+          if (ids && ids.length) openModal({ type: 'transfer', from, glyphIds: ids, mode: 'copy' });
+        }}
         title={doc ? `${workspaceName(slot)}: ${doc.meta.fontFamily}` : `${workspaceName(slot)}: empty`}
         aria-pressed={active === slot}
       >
@@ -51,6 +71,9 @@ export function TopBar() {
         <Btn tip="Save both fonts, metadata and settings as a project file" onClick={saveProjectFile}>💾 Save project</Btn>
         <Btn kind="primary" tip="Export the active font as a validated .ttf" disabled={!fonts[active]} onClick={() => openModal({ type: 'export', slot: active })}>⬇ Export TTF</Btn>
         <Btn tip="Font metadata & license" disabled={!fonts[active]} onClick={() => openModal({ type: 'metadata' })}>ℹ Info</Btn>
+        <Btn tip="Exact-pixel LED matrix settings (fixed grid height, whole-pixel metrics)" disabled={!fonts[active]} onClick={() => openModal({ type: 'ledMatrix', slot: active })}>
+          {fonts[active]?.ledMatrix ? '💡 LED matrix' : '💡 LED matrix…'}
+        </Btn>
         <span className="sep" style={{ width: 1, height: 22, background: 'var(--border)' }} />
         <IconBtn icon="↶" tip={`Undo in ${workspaceName(active)} (Ctrl+Z)`} disabled={past[active].length === 0} onClick={() => undo(active)} />
         <IconBtn icon="↷" tip={`Redo in ${workspaceName(active)} (Ctrl+Y)`} disabled={future[active].length === 0} onClick={() => redo(active)} />

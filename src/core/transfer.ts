@@ -8,6 +8,7 @@ import { makeId } from './types';
 import { cloneContours, scaleContours, contourBounds } from './contours';
 import { resolveGlyphContours, flattenedGlyph } from './fontCodec';
 import { suggestGlyphName } from './unicodeNames';
+import { conformGlyphToLed } from './ledMatrix';
 
 export type MetricsMode = 'preserve' | 'adapt';
 export type CollisionStrategy = 'replace' | 'skip' | 'reassign';
@@ -37,6 +38,8 @@ export interface TransferResult {
   reassigned: number;
   flattenedComposites: number;
   notes: string[];
+  /** Source glyph ids that were actually copied (skips and conflicts excluded). */
+  copiedSourceIds: string[];
 }
 
 export function findConflicts(src: FontDoc, dst: FontDoc, glyphIds: string[]): TransferConflict[] {
@@ -96,6 +99,9 @@ export function adaptGlyph(g: GlyphDoc, src: FontDoc, dst: FontDoc, scale: numbe
   copy.advanceWidth = Math.round(g.advanceWidth * s);
   copy.leftSideBearing = Math.round(g.leftSideBearing * s);
   if (!copy.name) copy.name = suggestGlyphName(copy.unicode) || g.name;
+
+  // Destination is an LED matrix font: snap onto its exact-pixel grid.
+  if (dst.ledMatrix) return conformGlyphToLed(copy, dst.ledMatrix, (x) => x.contours);
   return copy;
 }
 
@@ -114,6 +120,7 @@ export function transferGlyphs(src: FontDoc, dst: FontDoc, glyphIds: string[], o
   };
 
   let copied = 0, skipped = 0, replaced = 0, reassigned = 0, flattenedComposites = 0;
+  const copiedSourceIds: string[] = [];
 
   for (const id of glyphIds) {
     const g = src.glyphs.find((x) => x.id === id);
@@ -151,7 +158,8 @@ export function transferGlyphs(src: FontDoc, dst: FontDoc, glyphIds: string[], o
     const adapted = adaptGlyph(g, src, dst, scale, targetUnicode);
     if (g.kind === 'compound') flattenedComposites += 1;
 
-    if (opts.metricsMode === 'adapt' && adapted.kind !== 'empty') {
+    // LED destinations keep grid-derived metrics (whole pixels), so skip adapt.
+    if (opts.metricsMode === 'adapt' && adapted.kind !== 'empty' && !dst.ledMatrix) {
       // recompute advance from the copied outline extents, keeping the
       // source's right side bearing scaled proportionally
       const contours = adapted.kind === 'pixel' && adapted.pixel
@@ -168,13 +176,32 @@ export function transferGlyphs(src: FontDoc, dst: FontDoc, glyphIds: string[], o
       }
     }
     glyphs.push(adapted);
+    copiedSourceIds.push(id);
     copied += 1;
   }
 
   if (flattenedComposites > 0) {
     notes.push(`${flattenedComposites} composite glyph(s) were flattened to simple outlines during transfer (components are not shared between fonts).`);
   }
-  return { doc: { ...dst, glyphs }, copied, skipped, replaced, reassigned, flattenedComposites, notes };
+  return { doc: { ...dst, glyphs }, copied, skipped, replaced, reassigned, flattenedComposites, notes, copiedSourceIds };
+}
+
+/**
+ * Source font after a MOVE: the given glyphs are removed. `.notdef` is never
+ * removed. Composite references into removed glyphs are detached (flattened on
+ * export), mirroring removeGlyphs().
+ */
+export function sourceAfterMove(src: FontDoc, movedIds: string[]): FontDoc {
+  const drop = new Set(movedIds.filter((id) => src.glyphs.some((g) => g.id === id && g.name !== '.notdef')));
+  if (drop.size === 0) return src;
+  const glyphs = src.glyphs
+    .filter((g) => !drop.has(g.id))
+    .map((g) =>
+      g.kind === 'compound' && g.compound?.some((c) => c.glyphId && drop.has(c.glyphId))
+        ? { ...g, compound: g.compound.map((c) => (c.glyphId && drop.has(c.glyphId) ? { ...c, glyphId: null } : c)) }
+        : g,
+    );
+  return { ...src, glyphs };
 }
 
 /** Validate a proposed unicode reassignment inside one font. */

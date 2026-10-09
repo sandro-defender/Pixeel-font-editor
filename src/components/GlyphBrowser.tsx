@@ -6,6 +6,7 @@ import { charFromCodePoint, describeCodePoint, unicodeName } from '../core/unico
 import { renderGlyphCard } from '../render/glyphRender';
 import { Btn, SegBtns } from './ui';
 import { basicSetGlyphs } from '../core/fontFactory';
+import { glyphDragType } from './glyphDrag';
 
 function parseSearch(q: string): (g: GlyphDoc) => boolean {
   const s = q.trim();
@@ -32,7 +33,7 @@ function parseSearch(q: string): (g: GlyphDoc) => boolean {
   };
 }
 
-function GlyphCard(props: { slot: Slot; glyph: GlyphDoc; selected: boolean; multiSelected: boolean; previewVersion: number }) {
+function GlyphCard(props: { slot: Slot; glyph: GlyphDoc; selected: boolean; multiSelected: boolean; selectedIds: string[]; previewVersion: number }) {
   const { glyph, selected, multiSelected, slot } = props;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const selectGlyph = useStore((s) => s.selectGlyph);
@@ -64,6 +65,13 @@ function GlyphCard(props: { slot: Slot; glyph: GlyphDoc; selected: boolean; mult
         else selectGlyph(slot, glyph.id);
       }}
       role="button"
+      draggable
+      onDragStart={(e) => {
+        // dragging a selected card moves the whole selection; otherwise just this card
+        const ids = props.selectedIds.includes(glyph.id) ? props.selectedIds : [glyph.id];
+        e.dataTransfer.setData(glyphDragType(slot), JSON.stringify(ids));
+        e.dataTransfer.effectAllowed = 'copyMove';
+      }}
       aria-pressed={selected}
       aria-label={title}
       tabIndex={0}
@@ -152,14 +160,17 @@ export function GlyphBrowser(props: { slot: Slot }) {
             <>
               <span className="small muted">{ui.multiSelected.length} selected</span>
               <Btn tip="Clear selection" onClick={() => setMultiSelect(slot, [])}>✕</Btn>
-              <Btn kind="primary" tip="Copy the selected glyphs to the other font" onClick={() => openModal({ type: 'transfer', from: slot, glyphIds: ui.multiSelected })}>
-                Transfer →{slot === 'A' ? 'B' : 'A'}
+              <Btn kind="primary" tip={`Copy the selected glyphs to Font ${slot === 'A' ? 'B' : 'A'} (source is kept)`} onClick={() => openModal({ type: 'transfer', from: slot, glyphIds: ui.multiSelected, mode: 'copy' })}>
+                Copy → {slot === 'A' ? 'B' : 'A'}
+              </Btn>
+              <Btn tip={`Move the selected glyphs to Font ${slot === 'A' ? 'B' : 'A'}; removes them from this font (one undo restores both)`} onClick={() => openModal({ type: 'transfer', from: slot, glyphIds: ui.multiSelected, mode: 'move' })}>
+                Move → {slot === 'A' ? 'B' : 'A'}
               </Btn>
             </>
           )}
         </div>
       </div>
-      <div className="glyph-grid" role="listbox" aria-label="Glyphs">
+      <div className="glyph-grid" role="listbox" aria-label="Glyphs" title="Drag glyphs onto the Font A / Font B tabs to copy them">
         {glyphs.map((g) => (
           <GlyphCard
             key={g.id}
@@ -167,6 +178,7 @@ export function GlyphBrowser(props: { slot: Slot }) {
             glyph={g}
             selected={ui.glyphId === g.id}
             multiSelected={ui.multiSelected.includes(g.id)}
+            selectedIds={ui.multiSelected}
             previewVersion={previewVersion}
           />
         ))}
