@@ -61,11 +61,31 @@ npm run build        # type-check + production build into dist/
 npm run preview      # serve the production build locally
 ```
 
-## Deploying to GitHub Pages (no GitHub Actions needed)
+## Deploying to GitHub Pages
 
 The app supports **project pages** (`https://<user>.github.io/<repo>/`).
 The Vite `base` is resolved from `VITE_BASE_PATH`, or — for pages builds — from
 the git origin repository name automatically.
+
+### Automatic deployment with GitHub Actions
+
+The workflow in `.github/workflows/deploy-pages.yml` runs on every push to `main`
+and can also be started manually from the repository's **Actions** tab. It
+installs the locked dependencies, runs the tests and Pages-path verification,
+builds the site, then deploys `dist/` to GitHub Pages. It deploys through the
+GitHub Pages deployment service; it does not need to commit generated files to
+a `gh-pages` branch.
+
+One-time repository setup: open **Settings → Pages** and set **Build and
+deployment → Source** to **GitHub Actions**. After a successful workflow run,
+the published site is available at `https://<user>.github.io/<repo>/`.
+
+### Manual deployment (optional)
+
+The commands below publish through the `gh-pages` branch instead of the
+Actions deployment. If you switch to this method, change **Settings → Pages →
+Build and deployment → Source** to **Deploy from a branch**, then select
+`gh-pages` and `/ (root)`.
 
 **Option 1 — one command (uses the `gh-pages` dev dependency):**
 
