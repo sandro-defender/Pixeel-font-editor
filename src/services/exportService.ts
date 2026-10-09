@@ -38,6 +38,10 @@ async function getWorker(): Promise<Worker | null> {
       worker?.terminate();
       worker = null;
       workerFailed = true;
+      for (const cb of pending.values()) {
+        cb({ reqId: -1, ok: false, error: 'worker crashed' });
+      }
+      pending.clear();
     };
     return worker;
   } catch {
@@ -70,8 +74,8 @@ export async function exportFont(doc: FontDoc, options: ExportOptions): Promise<
         }
       }, 120_000);
     });
-    if (!resp.ok || !resp.buffer || !resp.report) throw new Error(resp.error ?? 'Export failed.');
-    return { buffer: resp.buffer, report: resp.report };
+    if (resp.ok && resp.buffer && resp.report) return { buffer: resp.buffer, report: resp.report };
+    // worker failed — fall back to the main thread (same error surfaces if it is a real font problem)
   }
   // main-thread fallback (tests, old browsers, worker errors)
   const { buffer, report } = buildTtf({ doc, sourceTtf: getSource(doc.sourceRef), options });
@@ -94,6 +98,7 @@ export async function buildPreviewFont(doc: FontDoc, familySuffix: string): Prom
     ]);
     pending.delete(reqId);
     if (resp.ok && resp.buffer) return resp.buffer;
+    // otherwise fall through to the main-thread build below
   }
   const { buffer } = buildTtf({
     doc: {
