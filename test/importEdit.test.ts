@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { parseTtf } from './helpers';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { Font } from 'fonteditor-core';
 import { buildTtf, importFont, flattenedGlyph } from '../src/core/fontCodec';
 import { getSource, registerSource } from '../src/core/sourceRegistry';
 import { translateContours } from '../src/core/contours';
@@ -41,8 +41,7 @@ describe('importing a real TTF', () => {
     });
     expect(report.validation?.ok).toBe(true);
 
-    const re = Font.create(buffer, { type: 'ttf', hinting: true, kerning: true }) as Font;
-    const ttf = re.data as any;
+    const ttf = parseTtf(buffer);
     expect(ttf.glyf.length).toBe(docWithRef.glyphs.length);
     // GPOS preserved
     expect(!!ttf.GPOS).toBe(true);
@@ -70,8 +69,7 @@ describe('importing a real TTF', () => {
       options: { preserveHinting: true, preserveKerning: true, validate: true },
     });
     expect(report.validation?.ok).toBe(true);
-    const re = Font.create(buffer, { type: 'ttf', hinting: true }) as Font;
-    const ttf = re.data as any;
+    const ttf = parseTtf(buffer);
     const idx = ttf.cmap[65];
     const origIdx = (sourceTtf.cmap as any)[65];
     const orig = (sourceTtf.glyf as any[])[origIdx];
@@ -97,7 +95,7 @@ describe('importing a real TTF', () => {
       sourceTtf,
       options: { preserveHinting: true, preserveKerning: true, validate: false },
     });
-    const re = Font.create(buffer, { type: 'ttf' }) as Font;
+    const re = { data: parseTtf(buffer) };
     const ttf = re.data as any;
     expect(ttf.glyf.filter((g: any) => g.compound).length).toBeGreaterThan(100);
   });

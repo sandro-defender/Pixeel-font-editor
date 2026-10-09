@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Font } from 'fonteditor-core';
-import { newTestFont } from './helpers';
+import { newTestFont, parseTtf } from './helpers';
 import { buildTtf } from '../src/core/fontCodec';
 import { deriveMetaFields, isValidPostScriptName, makePostScriptName, validateMeta } from '../src/core/metadata';
 import { applyLicense, buildLicenseTxt } from '../src/core/license';
@@ -52,7 +51,7 @@ describe('metadata & PostScript names', () => {
     };
     const { buffer, report } = buildTtf({ doc, sourceTtf: null, options: { preserveHinting: true, preserveKerning: true, validate: true } });
     expect(report.validation?.ok).toBe(true);
-    const parsed = Font.create(buffer, { type: 'ttf' }) as Font;
+    const parsed = { data: parseTtf(buffer) };
     const names = (parsed.data as any).name;
     expect(names.fontFamily).toBe('MetaFont');
     expect(names.fontSubFamily).toBe('Italic');
@@ -88,7 +87,7 @@ describe('license workflow', () => {
     expect(doc.meta.urlOfLicence).toBe('https://openfontlicense.org');
 
     const { buffer } = buildTtf({ doc, sourceTtf: null, options: { preserveHinting: true, preserveKerning: true, validate: true } });
-    const parsed = Font.create(buffer, { type: 'ttf' }) as Font;
+    const parsed = { data: parseTtf(buffer) };
     const names = (parsed.data as any).name;
     expect(names.licence).toContain('SIL OPEN FONT LICENSE');
     expect(names.urlOfLicence).toBe('https://openfontlicense.org');

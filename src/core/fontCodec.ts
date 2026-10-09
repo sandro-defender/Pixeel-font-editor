@@ -9,6 +9,9 @@
  *  - Everything else (GSUB, GDEF, COLR, fvar/gvar, ...) cannot be preserved.
  */
 import { Font } from 'fonteditor-core';
+import type { FontEditor } from 'fonteditor-core';
+
+type FontInstance = FontEditor.Font;
 import type {
   CompoundComponent,
   Contour,
@@ -90,9 +93,9 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
   const format: 'ttf' | 'otf' = hasGlyf ? 'ttf' : 'otf';
   const warnings: string[] = [];
 
-  let font: Font;
+  let font: FontInstance;
   try {
-    font = Font.create(buffer, { type: format, hinting: true, kerning: true }) as Font;
+    font = Font.create(buffer, { type: format, hinting: true, kerning: true }) as unknown as FontInstance;
   } catch (err) {
     throw new Error(`Failed to parse font: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -173,10 +176,10 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
     fontId: makeId('f'),
     meta: deriveMetaFields(meta),
     metrics: {
-      unitsPerEm: Math.round(head.unitsPerEm ?? 1000),
-      ascent: Math.round(hhea.ascent ?? 800),
-      descent: Math.round(hhea.descent ?? -200),
-      lineGap: Math.round(hhea.lineGap ?? 0),
+      unitsPerEm: Math.round(Number(head.unitsPerEm ?? 1000)),
+      ascent: Math.round(Number(hhea.ascent ?? 800)),
+      descent: Math.round(Number(hhea.descent ?? -200)),
+      lineGap: Math.round(Number(hhea.lineGap ?? 0)),
     },
     glyphs,
     source: {
@@ -317,7 +320,7 @@ export const DEFAULT_EXPORT_OPTIONS: ExportOptions = {
 };
 
 function emptyTtfObject(): TtfLike {
-  return (Font.create() as Font).data as unknown as TtfLike;
+  return (Font.create() as unknown as FontInstance).data as unknown as TtfLike;
 }
 
 /** Resolve the export contours for a glyph. */
@@ -416,8 +419,8 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
     kerning: options.preserveKerning,
     writeZeroContoursGlyfData: false,
   };
-  const font = Font.create(base as any);
-  const raw = font.write({ type: 'ttf', ...writerOptions }) as ArrayBuffer | Uint8Array;
+  const font = Font.create().set(base as never);
+  const raw = font.write({ type: 'ttf', ...writerOptions }) as unknown as ArrayBuffer | Uint8Array;
   // fonteditor-core returns a Node Buffer in Node environments — normalize to a
   // standalone ArrayBuffer (handles pooled buffers with a byteOffset).
   const buffer = toStandaloneBuffer(raw);
@@ -454,7 +457,7 @@ export function validateExport(buffer: ArrayBuffer, doc: FontDoc): ValidationRes
   const checks: ValidationCheck[] = [];
   const push = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
   try {
-    const font = Font.create(buffer, { type: 'ttf' }) as Font;
+    const font = Font.create(buffer, { type: 'ttf' }) as unknown as FontInstance;
     const ttf = font.data as unknown as TtfLike;
     push('Parse', true, `Re-parsed exported file (${buffer.byteLength} bytes).`);
     push('Glyph count', ttf.glyf.length === doc.glyphs.length, `expected ${doc.glyphs.length}, got ${ttf.glyf.length}`);

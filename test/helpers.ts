@@ -1,8 +1,14 @@
+import { Font } from 'fonteditor-core';
 import { Bitmap } from '../src/core/bitmap';
 import { createNewFont } from '../src/core/fontFactory';
 import type { FontDoc, GlyphDoc, PixelData } from '../src/core/types';
 import { makePixelGlyph } from '../src/core/fontFactory';
 import { suggestGlyphName } from '../src/core/unicodeNames';
+
+/** Parse a TTF buffer into the raw fonteditor ttf object (for assertions). */
+export function parseTtf(buffer: ArrayBuffer): any {
+  return (Font.create(buffer, { type: 'ttf', hinting: true, kerning: true }) as unknown as { data: any }).data;
+}
 
 export function newTestFont(gridW = 8, gridH = 8, family = 'TestPixel'): FontDoc {
   return createNewFont({ familyName: family, styleName: 'Regular', gridWidth: gridW, gridHeight: gridH });

@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Font } from 'fonteditor-core';
-import { drawGlyph, newTestFont } from './helpers';
+import { drawGlyph, newTestFont, parseTtf } from './helpers';
 import { buildTtf, importFont, validateExport } from '../src/core/fontCodec';
 import { tracePixelData } from '../src/core/trace';
 import type { FontDoc } from '../src/core/types';
@@ -53,7 +52,7 @@ describe('create → draw → export → reimport', () => {
     expect(contours.length).toBe(2);
 
     const { buffer } = exportDoc(doc);
-    const parsed = Font.create(buffer, { type: 'ttf' }) as Font;
+    const parsed = { data: parseTtf(buffer) };
     const ttf = parsed.data as any;
     const idx = ttf.cmap[79];
     expect(idx).toBeGreaterThan(0);
@@ -71,7 +70,7 @@ describe('create → draw → export → reimport', () => {
     doc = r.doc;
     const { buffer, report } = exportDoc(doc);
     expect(report.validation?.ok).toBe(true);
-    const parsed = Font.create(buffer, { type: 'ttf' }) as Font;
+    const parsed = { data: parseTtf(buffer) };
     const ttf = parsed.data as any;
     const g = ttf.glyf[ttf.cmap[88]];
     // ring outer + hole + two diagonally-touching dots (diagonal contact
@@ -82,7 +81,7 @@ describe('create → draw → export → reimport', () => {
   it('keeps .notdef valid and unmapped', async () => {
     const doc = newTestFont();
     const { buffer } = exportDoc(doc);
-    const parsed = Font.create(buffer, { type: 'ttf' }) as Font;
+    const parsed = { data: parseTtf(buffer) };
     const ttf = parsed.data as any;
     expect(ttf.glyf.length).toBe(doc.glyphs.length);
     expect(Object.values(ttf.cmap)).not.toContain(0);
@@ -98,10 +97,10 @@ describe('create → draw → export → reimport', () => {
       doc = r.doc;
       const { buffer, report } = exportDoc(doc);
       expect(report.validation?.ok, `grid ${w}x${h}`).toBe(true);
-      const parsed = Font.create(buffer, { type: 'ttf' }) as Font;
+      const parsed = { data: parseTtf(buffer) };
       const ttf = parsed.data as any;
       const glyph = ttf.glyf[ttf.cmap[65]];
-      expect(glyph.contours.length).toBe(2, `grid ${w}x${h} should export two pixel squares`);
+      expect(glyph.contours.length, `grid ${w}x${h} should export two pixel squares`).toBe(2);
       // sharp edges: all coordinates are multiples of unitsPerCell
       const upc = doc.glyphs.find((g) => g.unicode === 65)!.pixel!.unitsPerCell;
       for (const c of glyph.contours) {
