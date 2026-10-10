@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { newTestFont, drawGlyph } from './helpers';
 import { serializeProject, deserializeProject } from '../src/core/project';
 import { saveRecovery, loadRecovery, clearRecovery } from '../src/core/idb';
-import { registerSource } from '../src/core/sourceRegistry';
+import { hasSource, registerSource } from '../src/core/sourceRegistry';
+import { parseProjectFile } from '../src/services/persistence';
 import type { FontDoc } from '../src/core/types';
 
 describe('project save / load', () => {
@@ -34,15 +35,27 @@ describe('project save / load', () => {
     expect(() => deserializeProject('not json')).toThrow(/JSON/);
   });
 
-  it('restores preserved source data through a project round-trip', () => {
+  it('keeps preserved source data out of the registry until the caller adopts it', () => {
     const doc = newTestFont();
     const ref = registerSource({ head: { unitsPerEm: 1000 }, glyf: [] } as never);
     const withRef: FontDoc = { ...doc, sourceRef: ref };
     const payload = serializeProject({ A: withRef, B: null }, 'A', { theme: 'light' });
-    const { project, restoredSources } = deserializeProject(JSON.stringify(payload));
-    expect(restoredSources).toBe(1);
-    expect(project.fonts.A!.sourceRef).toBeTruthy();
-    expect(project.fonts.A!.sourceRef).not.toBe(ref); // re-registered under a new ref
+    const { project, sources } = deserializeProject(JSON.stringify(payload));
+    expect(Object.keys(sources)).toEqual([ref]);
+    expect(project.fonts.A!.sourceRef).toBe(ref); // parsing does not rename anything
+    expect(hasSource(ref)).toBe(true);
+  });
+
+  it('parseProjectFile registers the preserved source under a fresh ref', async () => {
+    const doc = newTestFont();
+    const ref = registerSource({ head: { unitsPerEm: 1000 }, glyf: [] } as never);
+    const payload = serializeProject({ A: { ...doc, sourceRef: ref }, B: null }, 'A', { theme: 'light' });
+    const file = new File([JSON.stringify(payload)], 'x.pixeel.json', { type: 'application/json' });
+    const res = await parseProjectFile(file);
+    const newRef = res.fonts.A!.sourceRef;
+    expect(newRef).toBeTruthy();
+    expect(newRef).not.toBe(ref);
+    expect(hasSource(newRef)).toBe(true);
   });
 });
 

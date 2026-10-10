@@ -24,7 +24,7 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 
 ## Technology & font engine
 
-- **React + TypeScript + Vite**, all dependencies bundled (no runtime CDN).
+- **React + TypeScript + Vite**, with **MUI (Material UI)** for layout and controls (light/dark theme), all dependencies bundled (no runtime CDN).
 - Font engine: **[fonteditor-core](https://github.com/ektx/fonteditor-core)** (MIT).
   It is one of the few browser-capable libraries that can both *read* and *write*
   genuine TrueType (`glyf`/`loca`) fonts. (opentype.js was evaluated and rejected:
@@ -45,7 +45,7 @@ npm run dev          # http://localhost:5173
 ### Tests
 
 ```bash
-npm test             # 77 unit/integration tests (vitest)
+npm test             # 79 unit/integration tests (vitest)
 npm run verify:pages # builds with a subpath base and serves it under /test-repo/
 ```
 
@@ -206,8 +206,9 @@ src/core/       font model, bitmap engine, contour tracer, TTF codec, licensing
 src/state/      zustand store (undo/redo history), glyph mutators
 src/services/   worker client, preview fonts, persistence, file actions
 src/workers/    export/preview web worker
-src/components/ UI (browser, editors, panels, dialogs)
-src/render/     canvas/SVG glyph rendering
+src/components/ UI: MUI top bar, glyph browser, editors, side panels, dialogs
+src/render/     canvas/SVG glyph rendering (cached bitmap layers)
+src/theme/      MUI theme (light/dark palette)
 test/           vitest suite + OFL-licensed fixtures (see test/fixtures/README.md)
 scripts/        GitHub Pages build verification
 ```

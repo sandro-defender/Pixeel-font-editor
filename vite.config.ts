@@ -45,7 +45,7 @@ export default defineConfig(({ mode }) => {
     base,
     plugins: [react()],
     resolve: {
-      alias: { '@': path.resolve(__dirname, 'src') },
+      alias: { '@': path.resolve(import.meta.dirname, 'src') },
     },
     server: { host: '0.0.0.0', port: 5173, allowedHosts: true },
     preview: { host: '0.0.0.0', port: 4173, allowedHosts: true },

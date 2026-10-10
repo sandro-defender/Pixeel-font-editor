@@ -132,21 +132,28 @@ function simplifyOrthogonal(contour: Contour): Contour {
   return out.length >= 3 ? out : contour;
 }
 
+const traceCache = new WeakMap<PixelData, Contour[]>();
+
 /**
  * Trace a placed pixel grid into font-unit contours.
- * Applies the grid→units mapping from PixelData.
+ * Applies the grid→units mapping from PixelData. PixelData objects are never
+ * mutated (edits create new objects), so results are cached per object identity.
  */
 export function tracePixelData(pixel: PixelData): Contour[] {
+  const cached = traceCache.get(pixel);
+  if (cached) return cached;
   const bitmap = Bitmap.fromB64(pixel.width, pixel.height, pixel.cellsB64);
   const grid = traceBitmap(bitmap);
   const { unitsPerCell: u, offsetX, baselineRow } = pixel;
-  return grid.map((c) =>
+  const out = grid.map((c) =>
     c.map((p) => ({
       x: Math.round(offsetX + p.x * u),
       y: Math.round((p.y - baselineRow) * u),
       onCurve: true,
     })),
   );
+  traceCache.set(pixel, out);
+  return out;
 }
 
 /** Winding classification: true when the loop encloses fill (CCW, area>0). */

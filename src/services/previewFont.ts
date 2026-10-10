@@ -27,8 +27,11 @@ export function previewFamily(slot: Slot): string | null {
 export function rebuildPreview(slot: Slot, doc: FontDoc): Promise<string | null> {
   const version = ++counter;
   buildChain = buildChain.then(async () => {
+    // a newer request arrived while this one was queued: its result would be thrown away
+    if (version !== counter) return;
     try {
       const buffer = await buildPreviewFont(doc, `PV${version}`);
+      if (version !== counter) return; // superseded while building
       const family = `PixeelPreview-${slot}-${version}`;
       const blob = new Blob([buffer], { type: 'font/ttf' });
       const url = URL.createObjectURL(blob);
