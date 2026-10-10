@@ -10,6 +10,7 @@ import { previewFamily, rebuildPreview } from '../services/previewFont';
 import { assignUnicode, duplicateGlyph, removeGlyphs, renameGlyph, setAdvance, setLeftSideBearing } from '../state/glyphActions';
 import { Hint, Section } from './ui';
 import { computeRSB, glyphBoxWidth } from '../core/metrics';
+import { kernedRuns, kerningOf } from '../core/kerning';
 
 /** Whole-number font units; rejects blank and fractional input. */
 function parseUnits(text: string): number | null {
@@ -217,6 +218,12 @@ function GlyphForm(props: { slot: Slot; glyph: GlyphDoc; doc: FontDoc }) {
         </Stack>
         <Stack sx={{ flexWrap: 'wrap' }} direction="row" spacing={1} useFlexGap>
           <Button
+            onClick={() => openModal({ type: 'kerning', slot, left: glyph.id })}
+            title="Open the kerning pairs editor with this glyph as the left glyph"
+          >
+            Kerning pairs…
+          </Button>
+          <Button
             onClick={() => openModal({ type: 'transfer', from: slot, glyphIds: [glyph.id], mode: 'copy' })}
             title="Copy this glyph to the other font"
           >
@@ -243,6 +250,8 @@ export function PreviewPanel(props: { slot: Slot }) {
   const [text, setText] = useState<string>(SAMPLE_TEXTS.Mixed);
   const [size, setSize] = useState(42);
   const [spacing, setSpacing] = useState(0);
+  const [highlightKerning, setHighlightKerning] = useState(false);
+  const openModal = useStore((s) => s.openModal);
   // start from the family already registered for this slot, so switching tabs does not flash
   const [family, setFamily] = useState<string | null>(() => previewFamily(slot));
   const [status, setStatus] = useState<'idle' | 'building' | 'error'>('idle');
@@ -263,7 +272,10 @@ export function PreviewPanel(props: { slot: Slot }) {
     return () => clearTimeout(timer);
   }, [doc, slot]);
 
+  const kernRuns = useMemo(() => (doc && highlightKerning ? kernedRuns(doc, text) : null), [doc, text, highlightKerning]);
+
   if (!doc) return <Typography color="text.secondary">Load a font to preview it.</Typography>;
+  const kernCount = kerningOf(doc).filter((p) => p.value !== 0).length;
 
   return (
     <Stack spacing={1.5}>
@@ -323,8 +335,30 @@ export function PreviewPanel(props: { slot: Slot }) {
             opacity: family ? 1 : 0.4,
           }}
         >
-          {text || 'Type something…'}
+          {kernRuns
+            ? kernRuns.runs.map((r, i) =>
+                r.kerned ? (
+                  <mark key={i} style={{ background: 'rgba(255, 193, 7, 0.35)', color: 'inherit', borderRadius: 2 }} data-kerned="">
+                    {r.text}
+                  </mark>
+                ) : (
+                  <React.Fragment key={i}>{r.text}</React.Fragment>
+                ),
+              )
+            : text || 'Type something…'}
         </Paper>
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
+          <FormControlLabel
+            control={<Checkbox size="small" checked={highlightKerning} onChange={(e) => setHighlightKerning(e.target.checked)} />}
+            label="Highlight kerned pairs"
+            slotProps={{ typography: { variant: 'body2' } }}
+            disabled={kernCount === 0}
+          />
+          <Chip size="small" variant="outlined" label={`${kernCount.toLocaleString()} kerning pair${kernCount === 1 ? '' : 's'}${kernRuns ? ` · ${kernRuns.pairCount} in this text` : ''}`} />
+          <Button size="small" onClick={() => openModal({ type: 'kerning', slot })}>
+            Edit kerning…
+          </Button>
+        </Stack>
         <Hint>Preview reflects unsaved edits. It is rebuilt after each change.</Hint>
       </Section>
     </Stack>

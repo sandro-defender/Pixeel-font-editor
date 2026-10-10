@@ -7,6 +7,7 @@ import { Bitmap, bytesToB64 } from '../core/bitmap';
 import { suggestGlyphName } from '../core/unicodeNames';
 import { validateUnicodeAssignment } from '../core/transfer';
 import { contourBounds } from '../core/contours';
+import { dropKerningFor, scaleKerning } from '../core/kerning';
 import { conformGlyphToLed, designSpan, ledAdvance, ledMetrics, ledScaleFromSpan, normalizeLedSpec } from '../core/ledMatrix';
 
 export function withGlyph(doc: FontDoc, glyphId: string, next: GlyphDoc): FontDoc {
@@ -29,7 +30,7 @@ export function removeGlyphs(doc: FontDoc, ids: string[]): FontDoc {
     }
     return g;
   });
-  return { ...doc, glyphs: fixed };
+  return dropKerningFor({ ...doc, glyphs: fixed }, ids);
 }
 
 export function duplicateGlyph(doc: FontDoc, glyphId: string, insertAfter = true): { doc: FontDoc; copy: GlyphDoc } {
@@ -185,7 +186,9 @@ export function applyLedMatrix(doc: FontDoc, spec: LedMatrixSpec | null): FontDo
   // Remember the design so later single-glyph snaps use the same scale.
   const hasVector = doc.glyphs.some((g) => !g.pixel && (g.kind === 'vector' || g.kind === 'compound' || g.contours.length > 0));
   const ledSource = hasVector ? { span: designSpan(doc, contoursOf), ascent: doc.metrics.ascent, descent: doc.metrics.descent } : doc.ledSource ?? null;
-  return { ...doc, ledMatrix: s, ledSource, metrics: ledMetrics(s), glyphs };
+  const metrics = ledMetrics(s);
+  // pair values are in font units: follow the new em size
+  return scaleKerning({ ...doc, ledMatrix: s, ledSource, metrics, glyphs }, metrics.unitsPerEm / doc.metrics.unitsPerEm);
 }
 
 /** Snap a single glyph onto the font's LED matrix (rasterizes vector outlines). */

@@ -67,6 +67,13 @@ export interface GlyphDoc {
   symmetry?: SymmetryMode;
 }
 
+/** A kerning pair (by glyph id): `value` font units are added after the left glyph. */
+export interface KerningPair {
+  left: string;
+  right: string;
+  value: number;
+}
+
 export interface FontMetrics {
   unitsPerEm: number;
   ascent: number;
@@ -144,6 +151,17 @@ export interface FontDoc {
    * outlines have been replaced by pixels.
    */
   ledSource?: { span: number; ascent: number; descent: number } | null;
+  /**
+   * Editable kerning pairs, read from the source font's kern / GPOS tables on
+   * import. Undefined when the font has none that could be read.
+   */
+  kerning?: KerningPair[];
+  /**
+   * True once the pairs were changed in Pixeel (or glyph indices shifted):
+   * export then writes a fresh `kern` table from `kerning` instead of passing
+   * the source font's kern / GPOS tables through.
+   */
+  kerningEdited?: boolean;
 }
 
 export interface WorkspaceSettings {

@@ -97,7 +97,7 @@ export async function exportFont(doc: FontDoc, options: ExportOptions): Promise<
   return { buffer, report };
 }
 
-/** Fast preview build (no validation, no hinting/kerning). */
+/** Fast preview build (no validation, no hinting; kerning included so the preview matches). */
 export async function buildPreviewFont(doc: FontDoc, familySuffix: string): Promise<ArrayBuffer> {
   const worker = await getWorker();
   if (worker) {
@@ -115,7 +115,7 @@ export async function buildPreviewFont(doc: FontDoc, familySuffix: string): Prom
       },
     },
     sourceTtf: getSource(doc.sourceRef),
-    options: { preserveHinting: false, preserveKerning: false, validate: false },
+    options: { preserveHinting: false, preserveKerning: true, validate: false },
   });
   return buffer;
 }

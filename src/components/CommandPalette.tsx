@@ -32,6 +32,7 @@ import UndoIcon from '@mui/icons-material/Undo';
 import RedoIcon from '@mui/icons-material/Redo';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
+import SpaceBarIcon from '@mui/icons-material/SpaceBar';
 import { useStore } from '../state/store';
 import type { Slot } from '../core/types';
 import { saveProjectFile } from '../services/fileActions';
@@ -182,6 +183,15 @@ export function useCommands(): Command[] {
         group: 'Font',
         disabled: !hasDoc,
         action: () => hasDoc && openModal({ type: 'ledMatrix', slot: active }),
+      },
+      {
+        id: 'kerning',
+        label: 'Kerning pairs…',
+        keywords: ['kerning', 'kern', 'pairs', 'spacing', 'gpos', 'typography'],
+        icon: <SpaceBarIcon />,
+        group: 'Font',
+        disabled: !hasDoc,
+        action: () => hasDoc && openModal({ type: 'kerning', slot: active, left: hasGlyph ? ui.glyphId! : undefined }),
       },
       {
         id: 'rasterize-font',
