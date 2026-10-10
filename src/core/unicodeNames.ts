@@ -67,15 +67,18 @@ export function parseCodePointInput(input: string): number | null {
   if (!s) return null;
   if (s.length === 1 || (s.length === 2 && s.codePointAt(0)! > 0xffff)) {
     const cp = s.codePointAt(0);
-    return cp === undefined || Number.isNaN(cp) ? null : cp;
+    return cp === undefined || !isValidCodePoint(cp) ? null : cp;
   }
+  // Bare digits are decimal ("65" → U+0041), as documented in the dialogs.
+  // (Checking hex first made this branch unreachable and parsed "65" as 0x65.)
+  if (/^\d+$/.test(s)) {
+    const v = parseInt(s, 10);
+    return isValidCodePoint(v) ? v : null;
+  }
+  // Hex needs a prefix (U+…, 0x…, \u…) or at least one hex letter (bare "10D0").
   const m = s.match(/^(?:u\+|0x|\\u)?([0-9a-f]{1,6})$/i);
   if (m) {
     const v = parseInt(m[1], 16);
-    return isValidCodePoint(v) ? v : null;
-  }
-  if (/^\d+$/.test(s)) {
-    const v = parseInt(s, 10);
     return isValidCodePoint(v) ? v : null;
   }
   return null;

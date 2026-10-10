@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { drawGlyph, newTestFont, parseTtf } from './helpers';
-import { buildTtf, importFont, validateExport } from '../src/core/fontCodec';
+import { buildTtf, importFont, listTables, validateExport } from '../src/core/fontCodec';
 import { tracePixelData } from '../src/core/trace';
 import type { FontDoc } from '../src/core/types';
 

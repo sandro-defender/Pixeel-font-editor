@@ -38,7 +38,7 @@ import KeyboardIcon from '@mui/icons-material/Keyboard';
 import AspectRatioIcon from '@mui/icons-material/AspectRatio';
 import { useStore } from '../state/store';
 import type { GlyphDoc, Slot } from '../core/types';
-import { Bitmap } from '../core/bitmap';
+import { Bitmap, clampPasteOffset } from '../core/bitmap';
 import { setPixelData, snapGlyphToLed } from '../state/glyphActions';
 import { tracePixelData } from '../core/trace';
 import { contoursToPath2D } from '../render/glyphRender';
@@ -79,7 +79,7 @@ type DragState =
   | { kind: 'paint'; value: number; last: Cell; label: string }
   | { kind: 'shape'; value: number; start: Cell; cur: Cell }
   | { kind: 'marquee'; start: Cell; cur: Cell }
-  | { kind: 'move'; startX: number; startY: number; origX: number; origY: number; x: number; y: number };
+  | { kind: 'move'; startX: number; startY: number; origX: number; origY: number; x: number; y: number; bm: Bitmap };
 
 interface Pal {
   panel: string;
@@ -121,7 +121,7 @@ const TOOLS: Array<{ tool: Tool; label: string; tip: string; icon: React.ReactNo
   { tool: 'fill', label: 'Flood fill', tip: 'Flood fill (F)', icon: <FormatColorFillIcon fontSize="small" /> },
   { tool: 'line', label: 'Line', tip: 'Line tool (L)', icon: <HorizontalRuleIcon fontSize="small" /> },
   { tool: 'rect', label: 'Rectangle', tip: 'Rectangle tool (R)', icon: <CropSquareIcon fontSize="small" /> },
-  { tool: 'select', label: 'Select and move', tip: 'Select / move pixels (M). Ctrl+A selects all.', icon: <HighlightAltIcon fontSize="small" /> },
+  { tool: 'select', label: 'Select and move', tip: 'Select / move pixels (M). Ctrl+A selects all. The selection stays inside the grid — no pixels are lost.', icon: <HighlightAltIcon fontSize="small" /> },
 ];
 
 /** Icon button with a tooltip; wrapped in a span so disabled buttons still show their tip. */
@@ -497,7 +497,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     setCursor(cell);
 
     if (tool === 'select' && sel && inRect(sel, cell)) {
-      dragRef.current = { kind: 'move', startX: cell.x, startY: cell.y, origX: sel.x, origY: sel.y, x: sel.x, y: sel.y };
+      dragRef.current = { kind: 'move', startX: cell.x, startY: cell.y, origX: sel.x, origY: sel.y, x: sel.x, y: sel.y, bm: sel.bm };
       return;
     }
 
@@ -558,11 +558,12 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
         setMarquee({ x0: d.start.x, y0: d.start.y, x1: cell.x, y1: cell.y });
         break;
       case 'move': {
-        const nx = d.origX + (c.x - d.startX);
-        const ny = d.origY + (c.y - d.startY);
-        d.x = nx;
-        d.y = ny;
-        setSel((s) => (s ? { ...s, x: nx, y: ny } : s));
+        // keep the selection fully inside the grid: pixels dragged past the
+        // edge would be cropped away when the selection is placed (data loss)
+        const pos = clampPasteOffset(gridW, gridH, d.bm, d.origX + (c.x - d.startX), d.origY + (c.y - d.startY));
+        d.x = pos.x;
+        d.y = pos.y;
+        setSel((s) => (s ? { ...s, x: pos.x, y: pos.y } : s));
         break;
       }
     }
@@ -600,8 +601,10 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       case 'move': {
         const moved = d.x !== d.origX || d.y !== d.origY;
         if (moved && sel) {
+          // clamp again at commit time so no pixel can ever be cropped away
+          const pos = clampPasteOffset(gridW, gridH, sel.bm, d.x, d.y);
           const work = baseBitmap.clone();
-          work.paste(sel.bm, d.x, d.y, 'or');
+          work.paste(sel.bm, pos.x, pos.y, 'or');
           commitBitmap(work, 'Move selection');
           setSel(null);
         }
@@ -637,7 +640,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     }
   };
 
-  /** Paste the clipboard with its top-left at the cursor (opaque, overwrites its rectangle). */
+  /** Paste the clipboard with its top-left at the cursor (opaque, overwrites its rectangle), kept fully inside the grid. */
   const pasteAtCursor = () => {
     if (!appClipboard || !baseBitmap) {
       toast('warning', 'Clipboard is empty.');
@@ -645,18 +648,24 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     }
     const clip = appClipboard;
     const work = withSel(baseBitmap);
-    const dx = cursor.x;
-    const dy = cursor.y - clip.height + 1;
-    for (let yy = 0; yy < clip.height; yy++) {
-      for (let xx = 0; xx < clip.width; xx++) work.set(dx + xx, dy + yy, 0);
+    // clamp so the clipboard stays inside the grid instead of being silently cropped
+    const pos = clampPasteOffset(gridW, gridH, clip, cursor.x, cursor.y - clip.height + 1);
+    if (clip.width > gridW || clip.height > gridH) {
+      toast('warning', `Clipboard is ${clip.width}×${clip.height} — larger than this ${gridW}×${gridH} grid, so it was cropped to fit.`);
     }
-    work.paste(clip, dx, dy);
+    work.eraseRect(pos.x, pos.y, clip.width, clip.height);
+    work.paste(clip, pos.x, pos.y);
     setSel(null);
     commitBitmap(work, 'Paste');
   };
 
   const nudgeSelection = (dx: number, dy: number) => {
-    setSel((s) => (s && sel ? { ...s, x: s.x + dx, y: s.y + dy } : s));
+    setSel((s) => {
+      if (!s || !sel) return s;
+      // clamped: a selection pushed out of the grid would lose its pixels when placed
+      const pos = clampPasteOffset(gridW, gridH, s.bm, s.x + dx, s.y + dy);
+      return { ...s, x: pos.x, y: pos.y };
+    });
   };
 
   /** Space / Enter: act on the cell under the keyboard cursor with the current tool. */

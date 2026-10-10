@@ -1496,7 +1496,7 @@ export function LedMatrixDialog(props: { slot: Slot }) {
 // Help
 // ---------------------------------------------------------------------------
 const SHORTCUTS: Array<[string, string]> = [
-  ['Arrow keys', 'Move the keyboard cursor one pixel (the cell is outlined on the canvas). With a selection, arrows nudge the selection instead.'],
+  ['Arrow keys', 'Move the keyboard cursor one pixel (the cell is outlined on the canvas). With a selection, arrows nudge the selection instead — it always stays inside the grid, so no pixels are lost.'],
   ['Shift + arrows', 'Shift the whole glyph bitmap one pixel in that direction (the cursor stays put).'],
   ['Space / Enter', 'Act at the cursor with the current tool (pencil/line/rect paints, eraser clears, fill floods from the cursor).'],
   ['Shift + Space', 'Erase at the cursor, whatever the current tool.'],
@@ -1504,7 +1504,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ['B / P · E · F · L · R', 'Pencil · Eraser · Flood fill · Line · Rectangle'],
   ['M / S', 'Select & move (marquee)'],
   ['Ctrl+A', 'Select the whole grid'],
-  ['Ctrl+C / X / V', 'Copy / cut / paste. Paste puts the top-left corner at the cursor.'],
+  ['Ctrl+C / X / V', 'Copy / cut / paste. Paste puts the top-left corner at the cursor, clamped so the clipboard stays inside the grid.'],
   ['Esc', 'Place a floating selection back onto the grid (or cancel an in-progress stroke or marquee).'],
   ['Delete / Backspace', 'Delete a floating selection, or clear the whole grid when nothing is selected.'],
   ['I · G · + / −', 'Invert · toggle grid lines · zoom'],

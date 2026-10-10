@@ -426,10 +426,6 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   // standalone ArrayBuffer (handles pooled buffers with a byteOffset).
   const buffer = toStandaloneBuffer(raw);
 
-  const writtenTables = ['OS/2', 'cmap', 'glyf', 'head', 'hhea', 'hmtx', 'loca', 'maxp', 'name', 'post'];
-  if (options.preserveHinting) writtenTables.push('cvt ', 'fpgm', 'prep', 'gasp');
-  if (options.preserveKerning) writtenTables.push('GPOS', 'kern', 'kerx');
-
   const srcTables = doc.source?.tables ?? [];
   const preserved = srcTables.filter((t) =>
     CORE_WRITABLE.has(t) ||
@@ -440,7 +436,9 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
 
   const report: ExportReport = {
     bytes: buffer.byteLength,
-    writtenTables: writtenTables.filter((t) => !t.endsWith(' ') || srcTables.length === 0 || true),
+    // report what is actually inside the produced file, not what we asked the
+    // writer for (e.g. no hinting tables are written for a font without them)
+    writtenTables: listTables(buffer),
     preservedTables: preserved,
     droppedTables: dropped,
     notes,
