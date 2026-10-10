@@ -10,8 +10,10 @@ import type { GlyphDoc, Slot } from '../core/types';
 import { PixelEditor } from './PixelEditor';
 import { OutlineEditor } from './OutlineEditor';
 import { MetricsHUD } from './MetricsHUD';
+import { CompositeBuilder } from './CompositeBuilder';
 import { flattenedGlyph } from '../core/fontCodec';
 import { initializePixelGrid } from '../state/glyphActions';
+import { hasOwnArtwork, startComposite } from '../core/composite';
 import { checkLedFont, glyphLedIssues, ledLabel } from '../core/ledMatrix';
 
 type Mode = 'pixel' | 'outline';
@@ -30,6 +32,7 @@ export function EditorPanel(props: { slot: Slot }) {
   const commit = useStore((s) => s.commit);
   const openModal = useStore((s) => s.openModal);
   const toast = useStore((s) => s.toast);
+  const askConfirm = useStore((s) => s.askConfirm);
 
   // the explicit choice only applies to the glyph it was made for
   const [choice, setChoice] = useState<{ glyphId: string | null; mode: Mode } | null>(null);
@@ -63,9 +66,25 @@ export function EditorPanel(props: { slot: Slot }) {
     setMode('outline');
   };
 
+  const buildComposite = async () => {
+    if (hasOwnArtwork(glyph)) {
+      const ok = await askConfirm({
+        title: 'Replace artwork with a composite?',
+        message: `“${glyph.name}” has its own drawing. Building it as a composite replaces that drawing with components. You can undo this with Ctrl+Z.`,
+        confirmLabel: 'Build composite',
+        danger: true,
+      });
+      if (!ok) return;
+    }
+    commit(slot, 'Start composite', (d) => startComposite(d, glyph.id));
+    setMode('outline');
+  };
+
   let body: React.ReactNode;
   if (mode === 'pixel' && glyph.pixel) {
     body = <PixelEditor key={glyph.id} slot={slot} glyph={glyph} />;
+  } else if (mode === 'outline' && glyph.kind === 'compound') {
+    body = <CompositeBuilder key={glyph.id} slot={slot} glyph={glyph} />;
   } else if (mode === 'outline' && (glyph.contours.length > 0 || glyph.kind === 'vector')) {
     body = <OutlineEditor key={glyph.id} slot={slot} glyph={glyph} />;
   } else {
@@ -144,6 +163,11 @@ export function EditorPanel(props: { slot: Slot }) {
             onClick={flatten}
           >
             Flatten composite
+          </Button>
+        )}
+        {!doc.ledMatrix && glyph.kind !== 'compound' && glyph.name !== '.notdef' && (
+          <Button startIcon={<LayersIcon />} title="Build this glyph from other glyphs (for example a letter plus an accent)" onClick={buildComposite}>
+            Build as composite…
           </Button>
         )}
         {!doc.ledMatrix && !glyph.pixel && (glyph.kind === 'vector' || glyph.kind === 'compound' || glyph.contours.length > 0) && (

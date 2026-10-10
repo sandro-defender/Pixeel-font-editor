@@ -36,6 +36,8 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | Advance & bearings editor | **Drag handles** for the advance width, left and right side bearings in both the pixel editor (ruler band) and the outline editor (origin and advance lines); live while dragging, **one undo step per drag**; optional **snap to the pixel grid** (or a vector step); numeric inputs stay in the Metrics panel; bearing guides drawn in the editors |
 | Kerning pairs | **Kerning dialog** (Font menu, Metrics panel, preview panel, command palette): search the list (sorted by how common the pair is), add a pair by typing two characters or code points (`A`, `U+0056`, `86`), edit with a slider **and** a numeric field, delete; pairs are imported from the font's `kern` / `GPOS` tables; the preview panel applies kerning live and can **highlight kerned pairs** |
 | Vertical metrics | **Vertical metrics dialog** (Font menu, command palette): ascent, descent, line gap, OS/2 typo ascender/descender/line gap, win ascent/descent and *Use typo metrics*; live **line-box preview** (hhea blue, typo green, win orange, baseline, line gap); **presets** (tight, pixel, Arial-, Roboto-, Times-like, airy); sync typo/win to hhea; validation (ascent > 0, descent ≤ 0, whole numbers, 16-bit ranges) with clipping and platform-mismatch warnings; one undo step; saved in project files; imported OS/2 values are preserved on export |
+| Multiple Unicode mappings | A glyph can have **several code points** (e.g. `A` and fullwidth `Ａ` sharing one outline). **Unicode mappings…** (Metrics panel, command palette) lists them, adds more by character / `U+FF21` / `0x41` / decimal, makes one primary or removes it. **Conflict detection** names the glyph that already owns a code point and offers **Reassign here** (undoable). The glyph browser shows a `+N` badge, searches every mapping and has a *Multi* filter; export writes every code point to the cmap and import reads them all back |
+| Composite builder | Composite glyphs open in a **builder**: add components with a search box, **drag them on the canvas** (one undo step per drag, optional grid snap) or type exact offset X/Y and scale X/Y, reorder, remove, *Match base advance*, *Flatten composite*. **Build as composite…** turns any glyph into one (with a confirmation before discarding artwork). Loops are rejected; components are exported as a real composite while they exist, imported composites stay composites until you edit their points |
 
 ## Using fonts with ESPHome
 
@@ -161,7 +163,7 @@ npm run dev          # http://localhost:5173
 ### Tests
 
 ```bash
-npm test             # 262 unit/integration tests (vitest)
+npm test             # 313 unit/integration tests (vitest)
 npm run verify:pages # builds with a subpath base and serves it under /test-repo/
 ```
 
@@ -180,6 +182,14 @@ both editors (one undo per drag), kerning parse/write for `kern` and `GPOS`
 (Lato), kerning edit/import/export round trips and the dialog, vertical-metrics
 validation, presets, OS/2 export/re-import (Lato keeps its own values) and the
 dialog.
+
+Font-structure coverage: multi-Unicode actions (add / reassign / remove / primary),
+conflict detection through extra mappings, multi-cmap export and re-import
+(including Lato's shared code points), transfers of multi-mapped glyphs, the
+mappings dialog and glyph-browser badge/filter; composite building (offsets, scale
+quantisation, loop detection, reorder, deleted components), composite export and
+re-import with their transforms, Lato's composites staying composites, and the
+builder UI including drag and numeric edits.
 
 New-font identity is covered too: the derived names (full / PostScript / unique)
 follow the family and style instead of keeping placeholders, and author, version
@@ -279,8 +289,12 @@ VITE_BASE_PATH=/my-subpath/ npm run build
   their own OS/2 values.
 - **Unedited glyphs keep their original data**, including hinting instructions.
   Editing a glyph's outline invalidates its instructions (reported at export).
-- **Composite glyphs** are preserved as composites while unedited; the editor
-  offers an explicit *Flatten composite* action, and transfer flattens them safely.
+- **Composite glyphs** are preserved as composites while unedited and when edited in the
+  builder (offsets, scale, order); the editor offers an explicit *Flatten composite*
+  action, and transfer flattens them safely. Component scales are limited to ±2
+  (TrueType F2Dot14); a composite whose component was deleted is exported flattened
+  and the report says so.
+- **Multiple code points per glyph** are written as several cmap entries and read back on import.
 - **Your uploaded file is never overwritten** — export downloads a new file.
 
 ## Export limitations (stated plainly)
@@ -340,7 +354,8 @@ Use **Shift+arrows** for that.
 
 ## Known limitations
 
-- One Unicode code point per glyph (fonts with multi-unicode glyphs keep the first mapping; noted on import).
+- cmap variation sequences (format 14) are not edited; only plain code point → glyph mappings are.
+- The composite builder edits offset and scale; a rotation/skew present in an imported component is kept but cannot be edited. LED matrix fonts cannot contain composites.
 - Units per em is read-only in the vertical metrics dialog. LED matrix fonts derive ascent/descent/line gap from the matrix, so those three are read-only there (typo and win values stay editable).
 - Kerning is pair-based: class kerning, contextual positioning and other GPOS features are not editable.
 - LED matrix mode fixes the grid height for every glyph. Switching a font into LED mode rasterizes vector glyphs onto the grid, so their outlines are replaced by pixels (undo reverts this).

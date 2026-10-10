@@ -104,7 +104,7 @@ Goal: Full control over spacing and vertical metrics.
 ## Step 4 — Font Structure Expansion
 Goal: Support complex font structures beyond one unicode per glyph.
 
-### Slice 4.1 — Multi-Unicode Support
+### Slice 4.1 — Multi-Unicode Support ✅ done
 - **What:** Allow multiple Unicode code points per glyph (e.g., A and fullwidth A share same outline). UI to add/remove mappings, conflict detection, preserve on import/export.
 - **Acceptance:**
   - Glyph browser shows all mappings.
@@ -113,7 +113,7 @@ Goal: Support complex font structures beyond one unicode per glyph.
   - Import preserves first mapping previously but now all.
   - Tests for multi-unicode round-trip.
 
-### Slice 4.2 — Composite Glyph Builder
+### Slice 4.2 — Composite Glyph Builder ✅ done
 - **What:** Visual builder for composite glyphs: add components, set offsets, scale, search base glyphs. Flatten preview, keep as composite on export.
 - **Acceptance:**
   - Builder UI in outline editor.
@@ -159,5 +159,5 @@ Goal: Support more formats for broader adoption.
 - Step 1: ✅ done (Command palette, Metrics HUD, Onboarding & Help)
 - Step 2: ✅ done (Symmetry & Mirroring, Tile Preview & Seamless, Magic Wand & Improved Fill)
 - Step 3: ✅ done (Visual Advance & Bearings Editor, Kerning Pairs Editor, Vertical Metrics Editor)
-- Step 4: ⬜ not started
+- Step 4: ✅ done (Multi-Unicode Support, Composite Glyph Builder)
 - Step 5: ⬜ not started

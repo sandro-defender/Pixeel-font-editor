@@ -383,7 +383,7 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
     };
     if (g.unicode !== null) rec.unicode = allUnicodes(g);
 
-    if (g.kind === 'compound' && g.compound && g.compound.every((c) => c.glyphId && idToIndex.has(c.glyphId))) {
+    if (g.kind === 'compound' && g.compound && g.compound.length > 0 && g.compound.every((c) => c.glyphId && idToIndex.has(c.glyphId))) {
       // preserve as composite
       rec.compound = true;
       rec.glyfs = g.compound.map((c) => ({
@@ -393,7 +393,7 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
         overlapCompound: c.overlapCompound ? 1 : 0,
       }));
     } else {
-      if (g.kind === 'compound' && g.compound) {
+      if (g.kind === 'compound' && g.compound && g.compound.length > 0) {
         notes.push(`Composite glyph "${g.name}" was flattened to simple outlines (a component glyph is missing).`);
       }
       rec.contours = resolveGlyphContours(g, doc.glyphs).map((c) => c.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y), onCurve: p.onCurve })));
