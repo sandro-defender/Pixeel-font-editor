@@ -41,6 +41,7 @@ export type ModalState =
   | { type: 'pixelCode'; slot: Slot; glyphId: string }
   | { type: 'glyphDesigner'; slot: Slot; glyphId: string }
   | { type: 'ledMatrix'; slot: Slot }
+  | { type: 'verticalMetrics'; slot: Slot }
   | { type: 'kerning'; slot: Slot; left?: string; right?: string }
   | { type: 'help' };
 

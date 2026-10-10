@@ -57,6 +57,7 @@ import { ledDotSize, paintBitmap, paintLedDots, toRgba } from '../render/bitmapC
 import { AppDialog, Hint, SegmentedControl, Section } from './ui';
 import { GlyphDesignerDialog } from './GlyphDesigner';
 import { KerningDialog } from './KerningDialog';
+import { VerticalMetricsDialog } from './VerticalMetricsDialog';
 
 /** Numeric field that keeps a number (NaN when empty) and reports it. */
 function NumberField(props: {
@@ -1881,6 +1882,8 @@ export function ModalHost() {
       return <GlyphDesignerDialog key={`${modal.slot}:${modal.glyphId}`} slot={modal.slot} glyphId={modal.glyphId} />;
     case 'ledMatrix':
       return <LedMatrixDialog slot={modal.slot} />;
+    case 'verticalMetrics':
+      return <VerticalMetricsDialog key={modal.slot} slot={modal.slot} />;
     case 'kerning':
       return <KerningDialog key={`${modal.slot}:${modal.left ?? ''}:${modal.right ?? ''}`} slot={modal.slot} left={modal.left} right={modal.right} />;
     case 'help':

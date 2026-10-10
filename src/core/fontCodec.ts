@@ -25,6 +25,7 @@ import { tracePixelData } from './trace';
 import { transformContours, contourBounds } from './contours';
 import { b64ToBytes } from './bitmap';
 import { checkLedFont, ledLabel } from './ledMatrix';
+import { effectiveVertical } from './verticalMetrics';
 import { buildKernTable, effectivePairs, kerningFromTtf, kerningOf, kerningToIndexPairs, parseKernTable } from './kerning';
 
 export interface TtfLike {
@@ -174,6 +175,8 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
 
   const head = ttf.head ?? ({} as any);
   const hhea = ttf.hhea ?? ({} as any);
+  const os2 = (ttf['OS/2'] ?? null) as Record<string, unknown> | null;
+  const os2Num = (k: string): number | undefined => (os2 && Number.isFinite(Number(os2[k])) && os2[k] !== undefined ? Math.round(Number(os2[k])) : undefined);
   const doc: FontDoc = {
     fontId: makeId('f'),
     meta: deriveMetaFields(meta),
@@ -182,6 +185,16 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
       ascent: Math.round(Number(hhea.ascent ?? 800)),
       descent: Math.round(Number(hhea.descent ?? -200)),
       lineGap: Math.round(Number(hhea.lineGap ?? 0)),
+      ...(os2
+        ? {
+            typoAscender: os2Num('sTypoAscender'),
+            typoDescender: os2Num('sTypoDescender'),
+            typoLineGap: os2Num('sTypoLineGap'),
+            winAscent: os2Num('usWinAscent'),
+            winDescent: os2Num('usWinDescent'),
+            useTypoMetrics: (Number(os2.fsSelection ?? 0) & 0x80) !== 0,
+          }
+        : {}),
     },
     glyphs,
     source: {
@@ -436,13 +449,19 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   base.hhea = { ...(base.hhea as object), ascent: doc.metrics.ascent, descent: doc.metrics.descent, lineGap: doc.metrics.lineGap } as any;
   const os2 = base['OS/2'];
   if (os2) {
+    // typo / win values: the editor's own when set (imported fonts keep theirs), else they follow hhea
+    const v = effectiveVertical(doc.metrics);
     Object.assign(os2, {
-      sTypoAscender: doc.metrics.ascent,
-      sTypoDescender: doc.metrics.descent,
-      sTypoLineGap: doc.metrics.lineGap,
-      usWinAscent: Math.max(doc.metrics.ascent, 0),
-      usWinDescent: Math.max(-doc.metrics.descent, 0),
+      sTypoAscender: v.typoAscender,
+      sTypoDescender: v.typoDescender,
+      sTypoLineGap: v.typoLineGap,
+      usWinAscent: v.winAscent,
+      usWinDescent: v.winDescent,
     });
+    if (doc.metrics.useTypoMetrics !== undefined) {
+      const sel = Number(os2.fsSelection ?? 0);
+      os2.fsSelection = doc.metrics.useTypoMetrics ? sel | 0x80 : sel & ~0x80;
+    }
   }
 
   // Name table: overlay editable fields; unknown/imported extra records survive.

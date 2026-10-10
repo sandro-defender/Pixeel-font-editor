@@ -33,6 +33,7 @@ import RedoIcon from '@mui/icons-material/Redo';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import SpaceBarIcon from '@mui/icons-material/SpaceBar';
+import FormatLineSpacingIcon from '@mui/icons-material/FormatLineSpacing';
 import { useStore } from '../state/store';
 import type { Slot } from '../core/types';
 import { saveProjectFile } from '../services/fileActions';
@@ -183,6 +184,15 @@ export function useCommands(): Command[] {
         group: 'Font',
         disabled: !hasDoc,
         action: () => hasDoc && openModal({ type: 'ledMatrix', slot: active }),
+      },
+      {
+        id: 'vertical-metrics',
+        label: 'Vertical metrics…',
+        keywords: ['vertical', 'metrics', 'ascent', 'descent', 'line gap', 'typo', 'win', 'line height', 'typography'],
+        icon: <FormatLineSpacingIcon />,
+        group: 'Font',
+        disabled: !hasDoc,
+        action: () => hasDoc && openModal({ type: 'verticalMetrics', slot: active }),
       },
       {
         id: 'kerning',

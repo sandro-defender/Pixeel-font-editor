@@ -8,6 +8,7 @@ import { suggestGlyphName } from '../core/unicodeNames';
 import { validateUnicodeAssignment } from '../core/transfer';
 import { contourBounds } from '../core/contours';
 import { dropKerningFor, scaleKerning } from '../core/kerning';
+import { checkVerticalMetrics } from '../core/verticalMetrics';
 import { conformGlyphToLed, designSpan, ledAdvance, ledMetrics, ledScaleFromSpan, normalizeLedSpec } from '../core/ledMatrix';
 
 export function withGlyph(doc: FontDoc, glyphId: string, next: GlyphDoc): FontDoc {
@@ -252,6 +253,7 @@ export function checkMetrics(metrics: FontDoc['metrics']): FontDoc['metrics'] {
   if (metrics.ascent <= 0) throw new Error('Ascent must be positive.');
   if (metrics.descent >= 0) throw new Error('Descent must be negative.');
   return {
+    ...metrics, // keeps the optional OS/2 typo / win values
     unitsPerEm: Math.round(metrics.unitsPerEm),
     ascent: Math.round(metrics.ascent),
     descent: Math.round(metrics.descent),
@@ -262,6 +264,11 @@ export function checkMetrics(metrics: FontDoc['metrics']): FontDoc['metrics'] {
 export function updateMetrics(doc: FontDoc, metrics: FontDoc['metrics']): FontDoc {
   const checked = checkMetrics(metrics);
   return { ...doc, metrics: checked };
+}
+
+/** Set all vertical metrics (hhea + OS/2 typo / win) at once; validated, one undoable edit. */
+export function setVerticalMetrics(doc: FontDoc, metrics: FontDoc['metrics']): FontDoc {
+  return { ...doc, metrics: checkVerticalMetrics(metrics) };
 }
 
 /** Give an outline-less glyph a blank pixel grid matching the font's template. */

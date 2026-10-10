@@ -16,6 +16,7 @@ import HelpOutlineIcon from '@mui/icons-material/Help';
 import GridOnIcon from '@mui/icons-material/GridOn';
 import SearchIcon from '@mui/icons-material/Search';
 import SpaceBarIcon from '@mui/icons-material/SpaceBar';
+import FormatLineSpacingIcon from '@mui/icons-material/FormatLineSpacing';
 import { useStore, workspaceName } from '../state/store';
 import type { Slot } from '../core/types';
 import { importFontFile, openProjectFile, saveProjectFile } from '../services/fileActions';
@@ -181,6 +182,10 @@ export function TopBar(props: { onOpenPalette?: () => void }) {
             <MenuItem key="led" disabled={!doc} onClick={() => { close(); openModal({ type: 'ledMatrix', slot: active }); }}>
               <ListItemIcon><LightbulbOutlinedIcon fontSize="small" /></ListItemIcon>
               <ListItemText primary={doc?.ledMatrix ? 'LED matrix (on)…' : 'LED matrix…'} secondary="Exact-pixel mode" />
+            </MenuItem>,
+            <MenuItem key="vmetrics" disabled={!doc} onClick={() => { close(); openModal({ type: 'verticalMetrics', slot: active }); }}>
+              <ListItemIcon><FormatLineSpacingIcon fontSize="small" /></ListItemIcon>
+              <ListItemText primary="Vertical metrics…" secondary="Ascent, descent, line gap, typo, win" />
             </MenuItem>,
             <MenuItem key="kerning" disabled={!doc} onClick={() => { close(); openModal({ type: 'kerning', slot: active }); }}>
               <ListItemIcon><SpaceBarIcon fontSize="small" /></ListItemIcon>

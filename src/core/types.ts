@@ -79,6 +79,19 @@ export interface FontMetrics {
   ascent: number;
   descent: number; // negative
   lineGap: number;
+  /**
+   * OS/2 vertical metrics. Optional: when absent they follow ascent / descent /
+   * lineGap (win values = ascent and −descent). Imported fonts keep their own.
+   */
+  typoAscender?: number;
+  typoDescender?: number; // usually negative
+  typoLineGap?: number;
+  /** usWinAscent: positive distance above the baseline (clipping limit on Windows). */
+  winAscent?: number;
+  /** usWinDescent: positive distance below the baseline. */
+  winDescent?: number;
+  /** OS/2 fsSelection bit 7: apps should use the typo metrics instead of hhea / win. */
+  useTypoMetrics?: boolean;
 }
 
 export interface FontMeta {
