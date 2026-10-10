@@ -42,26 +42,46 @@ export interface WorkerResp {
   buffer?: ArrayBuffer;
   report?: ExportReport;
   error?: string;
+  /** 'source-missing': the request named a source the worker does not hold; resend it with the data */
+  code?: 'source-missing';
 }
+
+/** Most recently used source tables kept in the worker (each can be several MB). */
+const SOURCE_CACHE_LIMIT = 4;
 
 declare const self: DedicatedWorkerGlobalScope;
 
 const sourceCache = new Map<string, TtfLike>();
 
+function cacheSource(ref: string, ttf: TtfLike): void {
+  sourceCache.delete(ref); // re-insert so the Map keeps least-recently-used order first
+  sourceCache.set(ref, ttf);
+  while (sourceCache.size > SOURCE_CACHE_LIMIT) {
+    const oldest = sourceCache.keys().next().value;
+    if (oldest === undefined) break;
+    sourceCache.delete(oldest);
+  }
+}
+
+class SourceMissingError extends Error {}
+
 function resolveSource(req: WorkerExportReq | WorkerPreviewReq): TtfLike | null {
+  if (!req.sourceRef) return null;
   if (req.sourceTtf) {
-    if (req.sourceRef) sourceCache.set(req.sourceRef, req.sourceTtf);
+    cacheSource(req.sourceRef, req.sourceTtf);
     return req.sourceTtf;
   }
-  if (req.sourceRef) return sourceCache.get(req.sourceRef) ?? null;
-  return null;
+  const cached = sourceCache.get(req.sourceRef);
+  if (!cached) throw new SourceMissingError(`Source ${req.sourceRef} is not loaded in the worker.`);
+  cacheSource(req.sourceRef, cached);
+  return cached;
 }
 
 self.onmessage = (ev: MessageEvent<WorkerReq>) => {
   const req = ev.data;
   try {
     if (req.type === 'register') {
-      sourceCache.set(req.sourceRef, req.sourceTtf);
+      cacheSource(req.sourceRef, req.sourceTtf);
       postMessage({ reqId: req.reqId ?? 0, ok: true } satisfies WorkerResp);
       return;
     }
@@ -91,6 +111,7 @@ self.onmessage = (ev: MessageEvent<WorkerReq>) => {
     }
   } catch (err) {
     const reqId = (req as { reqId?: number }).reqId ?? -1;
-    postMessage({ reqId, ok: false, error: err instanceof Error ? err.message : String(err) } satisfies WorkerResp);
+    const code = err instanceof SourceMissingError ? 'source-missing' : undefined;
+    postMessage({ reqId, ok: false, error: err instanceof Error ? err.message : String(err), code } satisfies WorkerResp);
   }
 };

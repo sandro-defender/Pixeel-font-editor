@@ -5,3 +5,4 @@ dist-ssr
 .DS_Store
 .gh-pages-tmp
 coverage
+*.tsbuildinfo

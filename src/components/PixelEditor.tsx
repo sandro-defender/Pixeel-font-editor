@@ -11,6 +11,31 @@
  * an LED matrix.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { alpha, useTheme } from '@mui/material/styles';
+import { Alert, Box, Button, Chip, IconButton, MenuItem, Paper, Stack, TextField, ToggleButton, ToggleButtonGroup, Tooltip, Typography } from '@mui/material';
+import EditIcon from '@mui/icons-material/Edit';
+import FormatClearIcon from '@mui/icons-material/FormatClear';
+import FormatColorFillIcon from '@mui/icons-material/FormatColorFill';
+import HorizontalRuleIcon from '@mui/icons-material/HorizontalRule';
+import CropSquareIcon from '@mui/icons-material/CropSquare';
+import HighlightAltIcon from '@mui/icons-material/HighlightAlt';
+import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import ContentCutIcon from '@mui/icons-material/ContentCut';
+import ContentPasteIcon from '@mui/icons-material/ContentPaste';
+import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import ArrowForwardIcon from '@mui/icons-material/ArrowForward';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
+import FlipIcon from '@mui/icons-material/Flip';
+import SwapVertIcon from '@mui/icons-material/SwapVert';
+import RotateLeftIcon from '@mui/icons-material/RotateLeft';
+import InvertColorsIcon from '@mui/icons-material/InvertColors';
+import DeleteIcon from '@mui/icons-material/Delete';
+import GridOnIcon from '@mui/icons-material/GridOn';
+import ZoomInIcon from '@mui/icons-material/ZoomIn';
+import ZoomOutIcon from '@mui/icons-material/ZoomOut';
+import KeyboardIcon from '@mui/icons-material/Keyboard';
+import AspectRatioIcon from '@mui/icons-material/AspectRatio';
 import { useStore } from '../state/store';
 import type { GlyphDoc, Slot } from '../core/types';
 import { Bitmap } from '../core/bitmap';
@@ -18,7 +43,7 @@ import { setPixelData, snapGlyphToLed } from '../state/glyphActions';
 import { tracePixelData } from '../core/trace';
 import { contoursToPath2D } from '../render/glyphRender';
 import { checkLedFont, glyphLedIssues, ledLabel } from '../core/ledMatrix';
-import { Btn, IconBtn } from './ui';
+import { bitmapLayer, paintBitmap, toRgba, type Rgba } from '../render/bitmapCanvas';
 
 /** Clipboard shared by all editor instances (pixels only). */
 let appClipboard: Bitmap | null = null;
@@ -46,6 +71,8 @@ interface Selection {
   bm: Bitmap;
   x: number;
   y: number;
+  /** the committed pixel data this selection was cut from; a mismatch means undo/redo or another edit ran */
+  afterB64: string;
 }
 
 type DragState =
@@ -54,15 +81,65 @@ type DragState =
   | { kind: 'marquee'; start: Cell; cur: Cell }
   | { kind: 'move'; startX: number; startY: number; origX: number; origY: number; x: number; y: number };
 
-const css = (name: string, fallback: string): string =>
-  getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+interface Pal {
+  panel: string;
+  panel2: string;
+  text: string;
+  dim: string;
+  accent: string;
+  accent2: string;
+  grid: string;
+  textRgba: Rgba;
+  accent2Rgba: Rgba;
+}
 
 const inRect = (r: { x: number; y: number; bm: Bitmap }, c: Cell): boolean =>
   c.x >= r.x && c.x < r.x + r.bm.width && c.y >= r.y && c.y < r.y + r.bm.height;
 
+/** Colours come from the MUI theme so the canvas follows light/dark mode. */
+function usePalette(): Pal {
+  const theme = useTheme();
+  return useMemo(() => {
+    const p = theme.palette;
+    return {
+      panel: p.background.paper,
+      panel2: p.background.default,
+      text: p.text.primary,
+      dim: p.text.secondary,
+      accent: p.primary.main,
+      accent2: p.secondary.main,
+      grid: alpha(p.text.primary, 0.14),
+      textRgba: toRgba(p.text.primary),
+      accent2Rgba: toRgba(p.secondary.main),
+    };
+  }, [theme]);
+}
+
+const TOOLS: Array<{ tool: Tool; label: string; tip: string; icon: React.ReactNode }> = [
+  { tool: 'pencil', label: 'Pencil', tip: 'Pencil — draw pixels (B). Right-drag erases.', icon: <EditIcon fontSize="small" /> },
+  { tool: 'eraser', label: 'Eraser', tip: 'Eraser — remove pixels (E)', icon: <FormatClearIcon fontSize="small" /> },
+  { tool: 'fill', label: 'Flood fill', tip: 'Flood fill (F)', icon: <FormatColorFillIcon fontSize="small" /> },
+  { tool: 'line', label: 'Line', tip: 'Line tool (L)', icon: <HorizontalRuleIcon fontSize="small" /> },
+  { tool: 'rect', label: 'Rectangle', tip: 'Rectangle tool (R)', icon: <CropSquareIcon fontSize="small" /> },
+  { tool: 'select', label: 'Select and move', tip: 'Select / move pixels (M). Ctrl+A selects all.', icon: <HighlightAltIcon fontSize="small" /> },
+];
+
+/** Icon button with a tooltip; wrapped in a span so disabled buttons still show their tip. */
+function Action(props: { tip: string; label: string; icon: React.ReactNode; onClick: () => void; active?: boolean; disabled?: boolean }) {
+  return (
+    <Tooltip title={props.tip}>
+      <span>
+        <IconButton aria-label={props.label} onClick={props.onClick} disabled={props.disabled} color={props.active ? 'primary' : 'default'} size="small" sx={props.active ? { bgcolor: 'action.selected' } : undefined}>
+          {props.icon}
+        </IconButton>
+      </span>
+    </Tooltip>
+  );
+}
+
 export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const { slot, glyph } = props;
-  const doc = useStore((s) => s.fonts[slot])!;
+  const doc = useStore((s) => s.fonts[slot]);
   const ui = useStore((s) => s.ui[slot]);
   const commit = useStore((s) => s.commit);
   const setTool = useStore((s) => s.setTool);
@@ -73,6 +150,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
   const openModal = useStore((s) => s.openModal);
+  const pal = usePalette();
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -84,7 +162,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const zoom = ui.zoom;
   const gridW = pixel?.width ?? 0;
   const gridH = pixel?.height ?? 0;
-  const led = doc.ledMatrix ?? null;
+  const led = doc?.ledMatrix ?? null;
   const tool = ui.tool;
 
   const baseBitmap = useMemo(
@@ -93,10 +171,10 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   );
 
   // transient editing state
-  const [sel, setSel] = useState<Selection | null>(null);
+  const [rawSel, setSel] = useState<Selection | null>(null);
   const [stroke, setStroke] = useState<{ x0: number; y0: number; x1: number; y1: number; value: number } | null>(null);
   const [marquee, setMarquee] = useState<Rect4 | null>(null);
-  const [cursor, setCursor] = useState<Cell>({ x: 0, y: 0 });
+  const [cursor, setCursor] = useState<Cell>({ x: 0, y: Math.max(0, gridH - 1) });
   const [hover, setHover] = useState<Cell | null>(null);
   const [kbAnchor, setKbAnchor] = useState<Cell | null>(null);
   const [tick, setTick] = useState(0);
@@ -104,14 +182,19 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const dragRef = useRef<DragState | null>(null);
   const bump = () => setTick((t) => t + 1);
 
-  // start each glyph with the cursor at the top-left and no leftovers
-  useEffect(() => {
+  // a selection only means something for the pixel data it was cut from
+  const sel = rawSel && pixel && rawSel.afterB64 === pixel.cellsB64 ? rawSel : null;
+
+  // start each glyph with the cursor at the bottom-left of the grid (top row, see ruler) and no leftovers
+  const [lastGlyph, setLastGlyph] = useState(glyph.id);
+  if (lastGlyph !== glyph.id) {
+    setLastGlyph(glyph.id);
     setCursor({ x: 0, y: Math.max(0, gridH - 1) });
     setKbAnchor(null);
     setStroke(null);
     setMarquee(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [glyph.id]);
+    setSel(null);
+  }
 
   useEffect(() => {
     setKbAnchor(null);
@@ -120,8 +203,24 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   }, [tool]);
 
   // LED-font facts shown in the toolbar
-  const ledCheck = useMemo(() => (doc.ledMatrix ? checkLedFont(doc) : null), [doc]);
+  const ledCheck = useMemo(() => (doc?.ledMatrix ? checkLedFont(doc) : null), [doc]);
   const needsSnap = !!ledCheck && glyphLedIssues(ledCheck, glyph.id).some((i) => i.severity === 'error');
+
+  // what is on screen: the paint-in-progress copy, or the committed bitmap
+  const display = liveRef.current ?? baseBitmap;
+  // the cached layer is rebuilt when the bitmap, selection or palette changes (tick: in-place paint strokes)
+  const layer = useMemo(
+    () =>
+      display
+        ? bitmapLayer(display, {
+            on: pal.textRgba,
+            off: null,
+            overlay: sel ? { bm: sel.bm, x: sel.x, y: sel.y, color: pal.accent2Rgba } : null,
+          })
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [display, sel, pal, tick],
+  );
 
   // ------------------------------------------------------------- helpers
   /** The bitmap with any floating selection pressed into it (no state change). */
@@ -131,8 +230,11 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     return out;
   };
 
-  const commitBitmap = (bm: Bitmap, label: string) => {
-    commit(slot, label, (d) => setPixelData(d, glyph.id, { ...pixel!, cellsB64: bm.toB64(), width: bm.width, height: bm.height }));
+  /** Commit a bitmap as a pixel edit; returns the stored pixel data string. */
+  const commitBitmap = (bm: Bitmap, label: string): string => {
+    const cellsB64 = bm.toB64();
+    commit(slot, label, (d) => setPixelData(d, glyph.id, { ...pixel!, cellsB64, width: bm.width, height: bm.height }));
+    return cellsB64;
   };
 
   /** Commit `work` if it differs from the base, and drop the floating selection. */
@@ -183,8 +285,8 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     const extracted = merged.extract(xa, ya, w, h);
     if (extracted.count() > 0) {
       for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (extracted.get(x, y)) merged.set(xa + x, ya + y, 0);
-      commitBitmap(merged, 'Select pixels');
-      setSel({ bm: extracted, x: xa, y: ya });
+      const afterB64 = commitBitmap(merged, 'Select pixels');
+      setSel({ bm: extracted, x: xa, y: ya, afterB64 });
     } else {
       commitWork(merged, 'Place selection');
     }
@@ -193,7 +295,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   // ------------------------------------------------------------- drawing
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !pixel || !baseBitmap) return;
+    if (!canvas || !pixel || !display || !layer) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     const W = gridW * zoom;
@@ -203,60 +305,31 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
 
-    const cPanel = css('--panel', '#fff');
-    const cPanel2 = css('--panel-2', '#f3f4f7');
-    const cText = css('--text', '#111');
-    const cDim = css('--text-dim', '#888');
-    const cAccent = css('--accent', '#d40');
-    const cAccent2 = css('--accent-2', '#26c');
-    const cGrid = css('--grid', 'rgba(0,0,0,0.12)');
-
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cw, ch);
-    ctx.fillStyle = cPanel2;
+    ctx.fillStyle = pal.panel2;
     ctx.fillRect(0, 0, cw, ch);
-    ctx.fillStyle = cPanel;
+    ctx.fillStyle = pal.panel;
     ctx.fillRect(RULER, RULER, W, H);
-
-    const bm = liveRef.current ?? baseBitmap;
 
     // --- grid content (drawn in cell space, origin = top-left of the grid)
     ctx.save();
     ctx.translate(RULER, RULER);
-    ctx.fillStyle = cText;
-    for (let y = 0; y < bm.height; y++) {
-      for (let x = 0; x < bm.width; x++) {
-        if (bm.get(x, y)) ctx.fillRect(x * zoom, (gridH - 1 - y) * zoom, zoom, zoom);
-      }
-    }
-
-    // floating selection
-    if (sel) {
-      ctx.fillStyle = cAccent2;
-      for (let y = 0; y < sel.bm.height; y++) {
-        for (let x = 0; x < sel.bm.width; x++) {
-          if (sel.bm.get(x, y)) ctx.fillRect((sel.x + x) * zoom, (gridH - 1 - (sel.y + y)) * zoom, zoom, zoom);
-        }
-      }
-      ctx.strokeStyle = cAccent;
-      ctx.setLineDash([4, 3]);
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(sel.x * zoom + 0.5, (gridH - sel.y - sel.bm.height) * zoom + 0.5, sel.bm.width * zoom - 1, sel.bm.height * zoom - 1);
-      ctx.setLineDash([]);
-    }
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(layer, 0, 0, W, H);
 
     // hover + keyboard cursor
     if (hover && !dragRef.current) {
       ctx.fillStyle = 'rgba(38,102,204,0.18)';
       ctx.fillRect(hover.x * zoom, (gridH - 1 - hover.y) * zoom, zoom, zoom);
     }
-    ctx.strokeStyle = cAccent;
+    ctx.strokeStyle = pal.accent;
     ctx.lineWidth = 2;
     ctx.strokeRect(cursor.x * zoom + 1, (gridH - 1 - cursor.y) * zoom + 1, zoom - 2, zoom - 2);
 
     // grid lines
     if (ui.showGrid && zoom >= 5) {
-      ctx.strokeStyle = cGrid;
+      ctx.strokeStyle = pal.grid;
       ctx.lineWidth = 1;
       ctx.beginPath();
       for (let x = 0; x <= gridW; x++) {
@@ -286,27 +359,27 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       ctx.font = '10px system-ui';
       ctx.fillText(label, 3, Math.max(10, Math.min(H - 3, y - 3)));
     };
-    guide(yFor(0), cAccent2, 'baseline');
-    guide(yFor(doc.metrics.ascent), cAccent2, 'ascent');
-    guide(yFor(doc.metrics.descent), cAccent2, 'descent');
+    guide(yFor(0), pal.accent2, 'baseline');
+    guide(yFor(doc?.metrics.ascent ?? 0), pal.accent2, 'ascent');
+    guide(yFor(doc?.metrics.descent ?? 0), pal.accent2, 'descent');
     const xOrigin = (-pixel.offsetX / upc) * zoom;
     const xAdv = ((glyph.advanceWidth - pixel.offsetX) / upc) * zoom;
     for (const [x, lab] of [[xOrigin, 'origin'], [xAdv, 'advance']] as Array<[number, string]>) {
       if (x < -20 || x > W + 20) continue;
-      ctx.strokeStyle = cAccent2;
+      ctx.strokeStyle = pal.accent2;
       ctx.setLineDash([2, 4]);
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, H);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = cAccent2;
+      ctx.fillStyle = pal.accent2;
       ctx.font = '10px system-ui';
       ctx.fillText(lab, Math.max(2, Math.min(W - 40, x + 3)), H - 4);
     }
 
     // reference overlay (trace another glyph)
-    if (ui.overlayGlyphId) {
+    if (ui.overlayGlyphId && doc) {
       const og = doc.glyphs.find((g) => g.id === ui.overlayGlyphId);
       if (og && og.id !== glyph.id) {
         const contours = og.kind === 'pixel' && og.pixel ? tracePixelData(og.pixel) : og.contours;
@@ -317,7 +390,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
           ];
           ctx.save();
           ctx.globalAlpha = 0.3;
-          ctx.fillStyle = cAccent2;
+          ctx.fillStyle = pal.accent2;
           ctx.fill(contoursToPath2D(contours, map), 'nonzero');
           ctx.restore();
         }
@@ -333,7 +406,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
         ? { x0: kbAnchor.x, y0: kbAnchor.y, x1: cursor.x, y1: cursor.y }
         : null;
     if (shapeFrom && (tool === 'line' || tool === 'rect')) {
-      ctx.strokeStyle = cAccent;
+      ctx.strokeStyle = pal.accent;
       ctx.lineWidth = Math.max(2, zoom * 0.6);
       ctx.beginPath();
       if (tool === 'line') {
@@ -354,10 +427,18 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     if (mq) {
       const xa = Math.min(mq.x0, mq.x1) * zoom;
       const ya = (gridH - Math.max(mq.y0, mq.y1) - 1) * zoom;
-      ctx.strokeStyle = cText;
+      ctx.strokeStyle = pal.text;
       ctx.setLineDash([4, 3]);
       ctx.lineWidth = 1;
       ctx.strokeRect(xa + 0.5, ya + 0.5, (Math.abs(mq.x1 - mq.x0) + 1) * zoom - 1, (Math.abs(mq.y1 - mq.y0) + 1) * zoom - 1);
+      ctx.setLineDash([]);
+    }
+    // the floating selection's dashed outline
+    if (sel) {
+      ctx.strokeStyle = pal.accent;
+      ctx.setLineDash([4, 3]);
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(sel.x * zoom + 0.5, (gridH - sel.y - sel.bm.height) * zoom + 0.5, sel.bm.width * zoom - 1, sel.bm.height * zoom - 1);
       ctx.setLineDash([]);
     }
     ctx.restore();
@@ -368,21 +449,18 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     ctx.font = '9px ui-monospace, monospace';
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'center';
-    ctx.fillStyle = cDim;
     for (let x = 0; x < gridW; x++) {
-      const on = x % step === 0 || x === cursor.x;
-      if (!on) continue;
-      ctx.fillStyle = x === cursor.x ? cAccent : cDim;
+      if (!(x % step === 0 || x === cursor.x)) continue;
+      ctx.fillStyle = x === cursor.x ? pal.accent : pal.dim;
       ctx.fillText(String(x), RULER + x * zoom + zoom / 2, RULER / 2);
     }
     ctx.textAlign = 'right';
     for (let r = 0; r < gridH; r++) {
-      const on = r % step === 0 || r === cursorScreenRow;
-      if (!on) continue;
-      ctx.fillStyle = r === cursorScreenRow ? cAccent : cDim;
+      if (!(r % step === 0 || r === cursorScreenRow)) continue;
+      ctx.fillStyle = r === cursorScreenRow ? pal.accent : pal.dim;
       ctx.fillText(String(r), RULER - 3, RULER + r * zoom + zoom / 2);
     }
-    ctx.strokeStyle = cGrid;
+    ctx.strokeStyle = pal.grid;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(RULER + 0.5, 0);
@@ -390,61 +468,46 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     ctx.moveTo(0, RULER + 0.5);
     ctx.lineTo(cw, RULER + 0.5);
     ctx.stroke();
-  }, [tick, zoom, gridW, gridH, pixel, baseBitmap, sel, stroke, marquee, cursor, hover, kbAnchor, ui.showGrid, tool, ui.overlayGlyphId, doc, glyph, slot]);
+  }, [layer, display, zoom, gridW, gridH, pixel, sel, stroke, marquee, cursor, hover, kbAnchor, ui.showGrid, tool, ui.overlayGlyphId, doc, glyph, pal]);
 
   // mini previews: actual size, enlarged, LED matrix
   useEffect(() => {
-    if (!baseBitmap) return;
-    const bm = liveRef.current ?? baseBitmap;
-    const cellPaint = (canvas: HTMLCanvasElement | null, scale: number) => {
-      if (!canvas) return;
-      canvas.width = bm.width * scale;
-      canvas.height = bm.height * scale;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = css('--text', '#111');
-      for (let y = 0; y < bm.height; y++) {
-        for (let x = 0; x < bm.width; x++) {
-          if (bm.get(x, y)) ctx.fillRect(x * scale, (bm.height - 1 - y) * scale, scale, scale);
-        }
-      }
-    };
-    cellPaint(actualRef.current, 1);
-    const bigScale = Math.max(1, Math.floor(72 / Math.max(bm.width, bm.height)));
-    cellPaint(bigRef.current, bigScale);
+    if (!display) return;
+    const on = { on: pal.textRgba };
+    if (actualRef.current) paintBitmap(actualRef.current, display, 1, on);
+    const bigScale = Math.max(1, Math.floor(72 / Math.max(display.width, display.height)));
+    if (bigRef.current) paintBitmap(bigRef.current, display, bigScale, on);
 
-    const led = ledRef.current;
-    if (led) {
-      const dot = Math.max(3, Math.floor(160 / Math.max(bm.width, bm.height)));
-      led.width = bm.width * dot + 4;
-      led.height = bm.height * dot + 4;
-      const ctx = led.getContext('2d');
-      if (!ctx) return;
-      ctx.fillStyle = '#0b0d10';
-      ctx.fillRect(0, 0, led.width, led.height);
-      const r = dot * 0.36;
-      for (let y = 0; y < bm.height; y++) {
-        for (let x = 0; x < bm.width; x++) {
-          const on = bm.get(x, y) === 1;
-          const cx = 2 + x * dot + dot / 2;
-          const cy = 2 + (bm.height - 1 - y) * dot + dot / 2;
-          ctx.beginPath();
-          ctx.arc(cx, cy, r, 0, Math.PI * 2);
-          if (on) {
-            ctx.shadowColor = '#ff6a2b';
-            ctx.shadowBlur = dot >= 6 ? dot * 0.7 : 0;
-            ctx.fillStyle = '#ff6a2b';
-          } else {
-            ctx.shadowBlur = 0;
-            ctx.fillStyle = '#23262e';
-          }
-          ctx.fill();
+    const ledCanvas = ledRef.current;
+    if (!ledCanvas) return;
+    const dot = Math.max(3, Math.floor(160 / Math.max(display.width, display.height)));
+    ledCanvas.width = display.width * dot + 4;
+    ledCanvas.height = display.height * dot + 4;
+    const ctx = ledCanvas.getContext('2d');
+    if (!ctx) return;
+    ctx.fillStyle = '#0b0d10';
+    ctx.fillRect(0, 0, ledCanvas.width, ledCanvas.height);
+    const r = dot * 0.36;
+    for (let y = 0; y < display.height; y++) {
+      for (let x = 0; x < display.width; x++) {
+        const lit = display.get(x, y) === 1;
+        const cx = 2 + x * dot + dot / 2;
+        const cy = 2 + (display.height - 1 - y) * dot + dot / 2;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        if (lit) {
+          ctx.shadowColor = '#ff6a2b';
+          ctx.shadowBlur = dot >= 6 ? dot * 0.7 : 0;
+          ctx.fillStyle = '#ff6a2b';
+        } else {
+          ctx.shadowBlur = 0;
+          ctx.fillStyle = '#23262e';
         }
+        ctx.fill();
       }
-      ctx.shadowBlur = 0;
     }
-  }, [tick, baseBitmap, gridW, gridH]);
+    ctx.shadowBlur = 0;
+  }, [display, tick, pal]);
 
   // ------------------------------------------------------------ pointer
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -494,16 +557,20 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!pixel) return;
     const c = cellAt(e);
-    setHover(c.inside ? { x: c.x, y: c.y } : null);
+    const next = c.inside ? { x: c.x, y: c.y } : null;
+    // only re-render when the hovered cell actually changes
+    setHover((h) => (h?.x === next?.x && h?.y === next?.y ? h : next));
     const d = dragRef.current;
     if (!d) return;
     const cell = clampCell(c);
     switch (d.kind) {
       case 'paint': {
         const bm = liveRef.current;
-        if (bm) bm.line(d.last.x, d.last.y, cell.x, cell.y, d.value);
-        d.last = cell;
-        bump();
+        if (bm && (cell.x !== d.last.x || cell.y !== d.last.y)) {
+          bm.line(d.last.x, d.last.y, cell.x, cell.y, d.value);
+          d.last = cell;
+          bump();
+        }
         break;
       }
       case 'shape':
@@ -613,7 +680,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   };
 
   const nudgeSelection = (dx: number, dy: number) => {
-    if (sel) setSel({ ...sel, x: sel.x + dx, y: sel.y + dy });
+    setSel((s) => (s && sel ? { ...s, x: s.x + dx, y: s.y + dy } : s));
   };
 
   /** Space / Enter: act on the cell under the keyboard cursor with the current tool. */
@@ -666,9 +733,15 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     transform('Rotate 90°', (bm) => bm.rotate90());
   };
 
+  const zoomBy = (dir: 1 | -1) => {
+    const step = dir > 0 ? (zoom >= 16 ? 8 : 2) : zoom > 16 ? 8 : 2;
+    setZoom(slot, zoom + dir * step);
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
     if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') return;
+    if (!pixel || !baseBitmap) return;
     const ctrl = e.ctrlKey || e.metaKey;
     const key = e.key.toLowerCase();
     const handled = () => {
@@ -713,21 +786,19 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     switch (key) {
       case 't': {
         handled();
-        if (baseBitmap) {
-          const work = withSel(baseBitmap);
-          work.toggle(cursor.x, cursor.y);
-          commitWork(work, 'Toggle pixel');
-        }
+        const work = withSel(baseBitmap);
+        work.toggle(cursor.x, cursor.y);
+        commitWork(work, 'Toggle pixel');
         break;
       }
-      case 'b': case 'p': setTool(slot, 'pencil'); handled(); break;
-      case 'e': setTool(slot, 'eraser'); handled(); break;
-      case 'f': setTool(slot, 'fill'); handled(); break;
-      case 'l': setTool(slot, 'line'); handled(); break;
-      case 'r': setTool(slot, 'rect'); handled(); break;
-      case 'm': case 's': setTool(slot, 'select'); handled(); break;
-      case 'g': toggleGridLines(slot); handled(); break;
-      case 'i': transform('Invert', (bm) => bm.invert()); handled(); break;
+      case 'b': case 'p': handled(); setTool(slot, 'pencil'); break;
+      case 'e': handled(); setTool(slot, 'eraser'); break;
+      case 'f': handled(); setTool(slot, 'fill'); break;
+      case 'l': handled(); setTool(slot, 'line'); break;
+      case 'r': handled(); setTool(slot, 'rect'); break;
+      case 'm': case 's': handled(); setTool(slot, 'select'); break;
+      case 'g': handled(); toggleGridLines(slot); break;
+      case 'i': handled(); transform('Invert', (bm) => bm.invert()); break;
       case 'delete':
       case 'backspace': {
         handled();
@@ -738,137 +809,188 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       case 'escape': {
         handled();
         if (kbAnchor) setKbAnchor(null);
-        else if (sel) commitWork(withSel(baseBitmap!), 'Place selection');
+        else if (sel) commitWork(withSel(baseBitmap), 'Place selection');
         setStroke(null);
         setMarquee(null);
         break;
       }
-      case '+': case '=': handled(); setZoom(slot, zoom + (zoom >= 16 ? 8 : 2)); break;
-      case '-': handled(); setZoom(slot, zoom - (zoom > 16 ? 8 : 2)); break;
+      case '+': case '=': handled(); zoomBy(1); break;
+      case '-': handled(); zoomBy(-1); break;
     }
   };
 
-  if (!pixel) {
-    return <div className="muted">This glyph has no pixel grid. Use “Convert to pixels…” or create a pixel font.</div>;
+  if (!pixel || !baseBitmap || !display) {
+    return <Alert severity="info">This glyph has no pixel grid. Use “Convert to pixels…” or create a pixel font.</Alert>;
   }
 
-  const toolBtn = (t: Tool, icon: string, tip: string) => (
-    <IconBtn icon={icon} tip={tip} active={tool === t} onClick={() => setTool(slot, t)} />
-  );
   const info = hover ?? cursor;
-  const infoValue = baseBitmap ? (sel && inRect(sel, info) ? sel.bm.get(info.x - sel.x, info.y - sel.y) : baseBitmap.get(info.x, info.y)) : 0;
+  const infoValue = sel && inRect(sel, info) ? sel.bm.get(info.x - sel.x, info.y - sel.y) : baseBitmap.get(info.x, info.y);
 
   return (
-    <div style={{ display: 'contents' }} onKeyDown={onKeyDown} tabIndex={0} aria-label="Pixel editor keyboard area" ref={wrapRef}>
-      <div className="editor-toolbar" role="toolbar" aria-label="Pixel tools">
-        {toolBtn('pencil', '✏️', 'Pencil — draw pixels (B). Right-drag erases.')}
-        {toolBtn('eraser', '🧽', 'Eraser — remove pixels (E)')}
-        {toolBtn('fill', '🪣', 'Flood fill (F)')}
-        {toolBtn('line', '📏', 'Line tool (L)')}
-        {toolBtn('rect', '▭', 'Rectangle tool (R)')}
-        {toolBtn('select', '⬚', 'Select / move pixels (M). Ctrl+A selects all.')}
-        <span className="sep" />
-        <IconBtn icon="⧉" tip="Copy selection / grid (Ctrl+C)" onClick={copySel} />
-        <IconBtn icon="✂" tip="Cut selection / grid (Ctrl+X)" onClick={cutSel} />
-        <IconBtn icon="📋" tip="Paste at the cursor (Ctrl+V)" onClick={pasteAtCursor} />
-        <span className="sep" />
-        <IconBtn icon="⬅" tip="Shift bitmap left (Shift+←)" onClick={() => shiftBitmap(-1, 0)} />
-        <IconBtn icon="➡" tip="Shift bitmap right (Shift+→)" onClick={() => shiftBitmap(1, 0)} />
-        <IconBtn icon="⬆" tip="Shift bitmap up (Shift+↑)" onClick={() => shiftBitmap(0, 1)} />
-        <IconBtn icon="⬇" tip="Shift bitmap down (Shift+↓)" onClick={() => shiftBitmap(0, -1)} />
-        <span className="sep" />
-        <IconBtn icon="⇋" tip="Flip horizontal" onClick={() => transform('Flip horizontal', (bm) => bm.flipHorizontal())} />
-        <IconBtn icon="⇅" tip="Flip vertical" onClick={() => transform('Flip vertical', (bm) => bm.flipVertical())} />
-        <IconBtn icon="⟳" tip={led ? 'Rotation disabled for LED matrix fonts (height is fixed)' : 'Rotate 90° counter-clockwise'} onClick={rotate} disabled={!!led} />
-        <IconBtn icon="◑" tip="Invert pixels (I)" onClick={() => transform('Invert', (bm) => bm.invert())} />
-        <IconBtn icon="🗑" tip="Clear grid (Delete)" onClick={() => transform('Clear', (bm) => bm.clear())} />
-        <span className="sep" />
-        <IconBtn icon="⊞" tip="Toggle grid lines (G)" active={ui.showGrid} onClick={() => toggleGridLines(slot)} />
-        <IconBtn icon="−" tip="Zoom out (-)" onClick={() => setZoom(slot, zoom - (zoom > 16 ? 8 : 2))} />
-        <span className="zoom-label">{zoom}px / cell</span>
-        <IconBtn icon="＋" tip="Zoom in (+)" onClick={() => setZoom(slot, zoom + (zoom >= 16 ? 8 : 2))} />
-        <span className="sep" />
-        <label className="small muted" title="Show another glyph semi-transparent for tracing">
-          Trace:{' '}
-          <select
+    <Box
+      ref={wrapRef}
+      onKeyDown={onKeyDown}
+      tabIndex={0}
+      aria-label="Pixel editor keyboard area"
+      sx={{ display: 'flex', flexDirection: 'column', gap: 1, minWidth: 0, outline: 'none', '&:focus-visible': { boxShadow: (t) => `0 0 0 2px ${t.palette.secondary.main}`, borderRadius: 1 } }}
+    >
+      <Paper sx={{ p: 0.75 }}>
+        <Stack direction="row" useFlexGap sx={{ flexWrap: 'wrap', gap: 0.75, alignItems: 'center' }}>
+          <ToggleButtonGroup
+            exclusive
+            size="small"
+            aria-label="Pixel tools"
+            value={tool}
+            onChange={(_, v: Tool | null) => v && setTool(slot, v)}
+          >
+            {TOOLS.map((t) => (
+              <Tooltip key={t.tool} title={t.tip}>
+                <ToggleButton value={t.tool} aria-label={t.label}>
+                  {t.icon}
+                </ToggleButton>
+              </Tooltip>
+            ))}
+          </ToggleButtonGroup>
+
+          <Stack direction="row" aria-label="Clipboard">
+            <Action tip="Copy selection / grid (Ctrl+C)" label="Copy" icon={<ContentCopyIcon fontSize="small" />} onClick={copySel} />
+            <Action tip="Cut selection / grid (Ctrl+X)" label="Cut" icon={<ContentCutIcon fontSize="small" />} onClick={cutSel} />
+            <Action tip="Paste at the cursor (Ctrl+V)" label="Paste" icon={<ContentPasteIcon fontSize="small" />} onClick={pasteAtCursor} />
+          </Stack>
+
+          <Stack direction="row" aria-label="Shift bitmap">
+            <Action tip="Shift bitmap left (Shift+←)" label="Shift left" icon={<ArrowBackIcon fontSize="small" />} onClick={() => shiftBitmap(-1, 0)} />
+            <Action tip="Shift bitmap right (Shift+→)" label="Shift right" icon={<ArrowForwardIcon fontSize="small" />} onClick={() => shiftBitmap(1, 0)} />
+            <Action tip="Shift bitmap up (Shift+↑)" label="Shift up" icon={<ArrowUpwardIcon fontSize="small" />} onClick={() => shiftBitmap(0, 1)} />
+            <Action tip="Shift bitmap down (Shift+↓)" label="Shift down" icon={<ArrowDownwardIcon fontSize="small" />} onClick={() => shiftBitmap(0, -1)} />
+          </Stack>
+
+          <Stack direction="row" aria-label="Transform">
+            <Action tip="Flip horizontal" label="Flip horizontal" icon={<FlipIcon fontSize="small" />} onClick={() => transform('Flip horizontal', (bm) => bm.flipHorizontal())} />
+            <Action tip="Flip vertical" label="Flip vertical" icon={<SwapVertIcon fontSize="small" />} onClick={() => transform('Flip vertical', (bm) => bm.flipVertical())} />
+            <Action
+              tip={led ? 'Rotation disabled for LED matrix fonts (height is fixed)' : 'Rotate 90° counter-clockwise'}
+              label="Rotate 90 degrees"
+              icon={<RotateLeftIcon fontSize="small" />}
+              onClick={rotate}
+              disabled={!!led}
+            />
+            <Action tip="Invert pixels (I)" label="Invert" icon={<InvertColorsIcon fontSize="small" />} onClick={() => transform('Invert', (bm) => bm.invert())} />
+            <Action tip="Clear grid (Delete)" label="Clear grid" icon={<DeleteIcon fontSize="small" />} onClick={() => transform('Clear', (bm) => bm.clear())} />
+          </Stack>
+
+          <Stack sx={{ alignItems: 'center' }} direction="row" aria-label="View">
+            <Action tip="Toggle grid lines (G)" label="Toggle grid lines" active={ui.showGrid} icon={<GridOnIcon fontSize="small" />} onClick={() => toggleGridLines(slot)} />
+            <Action tip="Zoom out (-)" label="Zoom out" icon={<ZoomOutIcon fontSize="small" />} onClick={() => zoomBy(-1)} />
+            <Typography variant="caption" color="text.secondary" sx={{ minWidth: 64, textAlign: 'center' }}>
+              {zoom}px / cell
+            </Typography>
+            <Action tip="Zoom in (+)" label="Zoom in" icon={<ZoomInIcon fontSize="small" />} onClick={() => zoomBy(1)} />
+          </Stack>
+
+          <TextField
+            select
+            label="Trace"
+            size="small"
             value={ui.overlayGlyphId ?? ''}
             onChange={(e) => setOverlayGlyph(slot, e.target.value || null)}
-            aria-label="Reference overlay glyph"
+            sx={{ width: 170 }}
+            title="Show another glyph semi-transparent for tracing"
           >
-            <option value="">off</option>
-            {doc.glyphs
+            <MenuItem value="">off</MenuItem>
+            {doc?.glyphs
               .filter((g) => g.id !== glyph.id && (g.contours.length || g.pixel))
               .slice(0, 400)
               .map((g) => (
-                <option key={g.id} value={g.id}>
-                  {g.unicode !== null ? String.fromCodePoint(g.unicode) + ' ' : ''}{g.name}
-                </option>
+                <MenuItem key={g.id} value={g.id}>
+                  {`${g.unicode !== null ? `${String.fromCodePoint(g.unicode)} ` : ''}${g.name}`}
+                </MenuItem>
               ))}
-          </select>
-        </label>
-        <span className="spacer" />
-        {needsSnap && (
-          <Btn
-            kind="primary"
-            tip="This glyph is not on the LED matrix grid yet. Snap it (vector outlines are rasterized)."
-            onClick={() => commit(slot, 'Snap to LED grid', (d) => snapGlyphToLed(d, glyph.id))}
-          >
-            Snap to LED grid
-          </Btn>
-        )}
-        <Btn tip="Enter the exact pixels as text art (#/.) or as LED column bytes (0x3E, …)" onClick={() => openModal({ type: 'pixelCode', slot, glyphId: glyph.id })}>
-          ⌨ Pixel code…
-        </Btn>
-        <Btn
-          tip={led ? 'Change the glyph width (the matrix height is fixed)' : 'Change the grid size (crop/pad or resample)'}
-          onClick={() => openModal({ type: 'resizeGrid', slot, glyphId: glyph.id })}
-        >
-          {led ? `Width ${gridW} px…` : `Grid ${gridW}×${gridH}…`}
-        </Btn>
-      </div>
+          </TextField>
 
-      <div className="editor-body">
-        <div className="editor-canvas-wrap">
-          <canvas
-            ref={canvasRef}
-            width={gridW * zoom + RULER}
-            height={gridH * zoom + RULER}
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerUp}
-            onPointerLeave={() => setHover(null)}
-            onContextMenu={(e) => e.preventDefault()}
-            aria-label={`Pixel grid, ${gridW} columns by ${gridH} rows${led ? `, LED matrix ${ledLabel(led)}` : ''}`}
-          />
-        </div>
-        <div className="pixel-status small" aria-live="polite">
-          <span className="chip">{hover ? 'pointer' : 'cursor'}: col {info.x} · row {gridH - 1 - info.y} from top</span>
-          <span className="chip">{infoValue ? 'on' : 'off'}</span>
-          <span className="muted">
-            cursor col {cursor.x}, row {gridH - 1 - cursor.y} · arrows move · Space/Enter act · Shift+Space erases · T toggles
-          </span>
-          {kbAnchor && <span className="chip warn-chip">{tool} started at col {kbAnchor.x}, row {gridH - 1 - kbAnchor.y} — arrows extend it, Space finishes, Esc cancels</span>}
-        </div>
-        <div className="editor-preview-strip">
-          <div className="mini-preview">
-            <canvas ref={actualRef} />
-            <div className="cap">actual size</div>
-          </div>
-          <div className="mini-preview">
-            <canvas ref={bigRef} />
-            <div className="cap">enlarged</div>
-          </div>
-          <div className="mini-preview">
-            <canvas ref={ledRef} />
-            <div className="cap">LED matrix</div>
-          </div>
-          <div className="small muted">
-            {led ? <span className="chip led-chip">LED {ledLabel(led)} · {led.cellUnits} units/px · spacing {led.spacing}px</span> : null}{' '}
-            advance {glyph.advanceWidth} · LSB {glyph.leftSideBearing} · cell {pixel.unitsPerCell}u · baseline row {pixel.baselineRow}
-          </div>
-        </div>
-      </div>
-    </div>
+          <Box sx={{ flex: 1 }} />
+          {needsSnap && (
+            <Button
+              variant="contained"
+              color="primary"
+              title="This glyph is not on the LED matrix grid yet. Snap it (vector outlines are rasterized)."
+              onClick={() => commit(slot, 'Snap to LED grid', (d) => snapGlyphToLed(d, glyph.id))}
+            >
+              Snap to LED grid
+            </Button>
+          )}
+          <Button
+            title="Enter the exact pixels as text art (#/.) or as LED column bytes (0x3E, …)"
+            startIcon={<KeyboardIcon />}
+            onClick={() => openModal({ type: 'pixelCode', slot, glyphId: glyph.id })}
+          >
+            Pixel code…
+          </Button>
+          <Button
+            title={led ? 'Change the glyph width (the matrix height is fixed)' : 'Change the grid size (crop/pad or resample)'}
+            startIcon={<AspectRatioIcon />}
+            onClick={() => openModal({ type: 'resizeGrid', slot, glyphId: glyph.id })}
+          >
+            {led ? `Width ${gridW} px…` : `Grid ${gridW}×${gridH}…`}
+          </Button>
+        </Stack>
+      </Paper>
+
+      <Stack direction={{ xs: 'column', xl: 'row' }} spacing={1.5} sx={{ minWidth: 0 }}>
+        <Box sx={{ minWidth: 0, flex: 1 }}>
+          <Box sx={{ overflow: 'auto', maxWidth: '100%', p: 1, borderRadius: 1, bgcolor: 'background.default', border: 1, borderColor: 'divider' }}>
+            <canvas
+              ref={canvasRef}
+              width={gridW * zoom + RULER}
+              height={gridH * zoom + RULER}
+              style={{ display: 'block', cursor: 'crosshair', touchAction: 'none', userSelect: 'none', maxWidth: '100%' }}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={onPointerUp}
+              onPointerCancel={onPointerUp}
+              onPointerLeave={() => setHover(null)}
+              onContextMenu={(e) => e.preventDefault()}
+              aria-label={`Pixel grid, ${gridW} columns by ${gridH} rows${led ? `, LED matrix ${ledLabel(led)}` : ''}`}
+            />
+          </Box>
+          <Stack direction="row" useFlexGap sx={{ mt: 1, flexWrap: 'wrap', gap: 1, alignItems: 'center' }} aria-live="polite">
+            <Chip size="small" label={`${hover ? 'pointer' : 'cursor'}: col ${info.x} · row ${gridH - 1 - info.y} from top`} />
+            <Chip size="small" label={infoValue ? 'on' : 'off'} color={infoValue ? 'primary' : 'default'} />
+            <Typography variant="caption" color="text.secondary">
+              cursor col {cursor.x}, row {gridH - 1 - cursor.y} · arrows move · Space/Enter act · Shift+Space erases · T toggles
+            </Typography>
+            {kbAnchor && (
+              <Chip size="small" color="warning" label={`${tool} started at col ${kbAnchor.x}, row ${gridH - 1 - kbAnchor.y} — arrows extend it, Space finishes, Esc cancels`} />
+            )}
+          </Stack>
+        </Box>
+
+        <Stack direction={{ xs: 'row', xl: 'column' }} spacing={1.5} sx={{ alignItems: 'flex-start',  flexWrap: 'wrap' }}>
+          <Figure caption="actual size"><canvas ref={actualRef} style={{ display: 'block', imageRendering: 'pixelated' }} /></Figure>
+          <Figure caption="enlarged"><canvas ref={bigRef} style={{ display: 'block', imageRendering: 'pixelated' }} /></Figure>
+          <Figure caption="LED matrix"><canvas ref={ledRef} style={{ display: 'block' }} /></Figure>
+          <Box>
+            {led && (
+              <Chip size="small" color="secondary" sx={{ mb: 0.75 }} label={`LED ${ledLabel(led)} · ${led.cellUnits} units/px · spacing ${led.spacing}px`} />
+            )}
+            <Typography variant="caption" color="text.secondary" component="p" sx={{ m: 0 }}>
+              advance {glyph.advanceWidth} · LSB {glyph.leftSideBearing} · cell {pixel.unitsPerCell}u · baseline row {pixel.baselineRow}
+            </Typography>
+          </Box>
+        </Stack>
+      </Stack>
+    </Box>
+  );
+}
+
+/** Captioned mini preview. */
+function Figure(props: { caption: string; children: React.ReactNode }) {
+  return (
+    <Paper sx={{ p: 1, display: 'inline-flex', flexDirection: 'column', gap: 0.5, alignItems: 'center' }}>
+      {props.children}
+      <Typography variant="caption" color="text.secondary">
+        {props.caption}
+      </Typography>
+    </Paper>
   );
 }

@@ -79,7 +79,7 @@ export function withGlyphMap(doc: FontDoc, glyphId: string, fn: (g: GlyphDoc) =>
 }
 
 export function setPixelData(doc: FontDoc, glyphId: string, pixel: PixelData): FontDoc {
-  return withGlyphMap(doc, glyphId, (g) => ({ ...g, pixel, kind: pixel.cellsB64.length ? 'pixel' : g.kind, edited: true }));
+  return withGlyphMap(doc, glyphId, (g) => ({ ...g, pixel, kind: 'pixel', edited: true }));
 }
 
 export function setContours(doc: FontDoc, glyphId: string, contours: Contour[]): FontDoc {
@@ -203,15 +203,24 @@ export function revertToSource(doc: FontDoc, glyphId: string): FontDoc {
   }));
 }
 
-export function markSaved(doc: FontDoc): FontDoc {
-  return doc;
-}
-
-export function updateMetrics(doc: FontDoc, metrics: FontDoc['metrics']): FontDoc {
+/** Validate global vertical metrics; returns the rounded, checked values. Throws on invalid input. */
+export function checkMetrics(metrics: FontDoc['metrics']): FontDoc['metrics'] {
+  const values = [metrics.unitsPerEm, metrics.ascent, metrics.descent, metrics.lineGap];
+  if (!values.every((v) => Number.isFinite(v))) throw new Error('Metrics must be numbers.');
   if (metrics.unitsPerEm < 16 || metrics.unitsPerEm > 16384) throw new Error('unitsPerEm must be 16–16384.');
   if (metrics.ascent <= 0) throw new Error('Ascent must be positive.');
   if (metrics.descent >= 0) throw new Error('Descent must be negative.');
-  return { ...doc, metrics: { ...metrics, unitsPerEm: Math.round(metrics.unitsPerEm), ascent: Math.round(metrics.ascent), descent: Math.round(metrics.descent), lineGap: Math.round(metrics.lineGap) } };
+  return {
+    unitsPerEm: Math.round(metrics.unitsPerEm),
+    ascent: Math.round(metrics.ascent),
+    descent: Math.round(metrics.descent),
+    lineGap: Math.round(metrics.lineGap),
+  };
+}
+
+export function updateMetrics(doc: FontDoc, metrics: FontDoc['metrics']): FontDoc {
+  const checked = checkMetrics(metrics);
+  return { ...doc, metrics: checked };
 }
 
 /** Give an outline-less glyph a blank pixel grid matching the font's template. */

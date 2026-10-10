@@ -1,6 +1,6 @@
 /** Project save/load: a JSON document containing both fonts + settings. */
 import type { FontDoc, ProjectFile, Slot, WorkspaceSettings } from './types';
-import { getSource, registerSource } from './sourceRegistry';
+import { getSource } from './sourceRegistry';
 import type { TtfLike } from './fontCodec';
 
 export const PROJECT_FORMAT = 'pixeel-project';
@@ -40,10 +40,11 @@ export function serializeProject(
 
 export interface DeserializedProject {
   project: ProjectFile;
-  /** New sourceRef values mapped old→new (registry entries re-registered). */
-  restoredSources: number;
+  /** Source ttf objects from the file, keyed by the sourceRef they had in the file. Nothing is registered here. */
+  sources: Record<string, TtfLike>;
 }
 
+/** Parse and validate a project file. Pure: it does not touch the source registry. */
 export function deserializeProject(json: string): DeserializedProject {
   let parsed: SerializedProject;
   try {
@@ -57,23 +58,11 @@ export function deserializeProject(json: string): DeserializedProject {
   if (parsed.project.version !== PROJECT_VERSION) {
     throw new Error(`Unsupported project version ${parsed.project.version}.`);
   }
-  const { project, sources = {} } = parsed;
-  let restored = 0;
-  const remap: Record<string, string> = {};
-  for (const [ref, ttf] of Object.entries(sources)) {
-    if (ttf && typeof ttf === 'object' && Array.isArray((ttf as TtfLike).glyf)) {
-      const newRef = registerSource(ttf);
-      remap[ref] = newRef;
-      restored += 1;
-    }
+  const sources: Record<string, TtfLike> = {};
+  for (const [ref, ttf] of Object.entries(parsed.sources ?? {})) {
+    if (ttf && typeof ttf === 'object' && Array.isArray((ttf as TtfLike).glyf)) sources[ref] = ttf;
   }
-  for (const slot of ['A', 'B'] as Slot[]) {
-    const f = project.fonts[slot];
-    if (f && f.sourceRef && remap[f.sourceRef]) {
-      project.fonts[slot] = { ...f, sourceRef: remap[f.sourceRef] };
-    }
-  }
-  return { project, restoredSources: restored };
+  return { project: parsed.project, sources };
 }
 
 export function projectFileBlob(data: SerializedProject): Blob {
