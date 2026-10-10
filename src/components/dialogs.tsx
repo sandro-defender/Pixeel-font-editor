@@ -48,6 +48,7 @@ import { buildOFLLicense, OFL_VERSION_NOTE } from '../core/oflText';
 import { exportFont } from '../services/exportService';
 import { DEFAULT_EXPORT_OPTIONS, resolveGlyphContours, type ExportReport } from '../core/fontCodec';
 import { downloadArrayBuffer, downloadBlob } from '../services/persistence';
+import { exportEsphomePackage } from '../services/esphomeExport';
 import { releaseSourcesNotIn } from '../services/fileActions';
 import { findConflicts, sourceAfterMove, transferGlyphs, type CollisionStrategy, type MetricsMode } from '../core/transfer';
 import { detectFontPixelGrid, gridForRows, pixelizeFont, placeOnGrid, type PixelizeReport } from '../core/pixelGrid';
@@ -110,6 +111,9 @@ export function NewFontDialog() {
 
   const [family, setFamily] = useState('My Pixel Font');
   const [style, setStyle] = useState('Regular');
+  const [author, setAuthor] = useState('');
+  const [version, setVersion] = useState('1.000');
+  const [licenseChoice, setLicenseChoice] = useState<LicenseMode>('ofl');
   const [kind, setKind] = useState<'standard' | 'led'>('standard');
   const [preset, setPreset] = useState<'8' | '16' | '32' | 'custom'>('16');
   const [cw, setCw] = useState(16);
@@ -147,10 +151,31 @@ export function NewFontDialog() {
   const create = async () => {
     if (error) return;
     const state = useStore.getState();
-    const doc: FontDoc =
+    let doc: FontDoc =
       kind === 'led' && ledSpec
         ? createNewFont({ familyName: family, styleName: style, gridWidth: ledSpec.cols, gridHeight: ledSpec.rows, led: ledSpec })
         : createNewFont({ familyName: family, styleName: style, gridWidth: gridW, gridHeight: gridH });
+
+    // Apply author, version and chosen license automatically
+    const year = String(new Date().getFullYear());
+    const ver = version.trim();
+    const meta = {
+      ...doc.meta,
+      designer: author.trim(),
+      version: ver ? `Version ${ver.replace(/^version\s+/i, '')}` : doc.meta.version,
+      copyright: author.trim() ? `Copyright (c) ${year}, ${author.trim()}` : doc.meta.copyright,
+      urlOfFontDesigner: '',
+    };
+    doc = {
+      ...doc,
+      meta: applyLicense(meta, {
+        mode: licenseChoice,
+        oflCopyrightHolder: author.trim() || family.trim(),
+        oflYear: year,
+        oflReservedNames: family.trim(),
+      }),
+    };
+
     // when both workspaces are full, the target is the active one: confirm before replacing it
     const slot: Slot = state.fonts.A === null ? 'A' : state.fonts.B === null ? 'B' : state.active;
     const existing = state.fonts[slot];
@@ -191,8 +216,27 @@ export function NewFontDialog() {
       }
     >
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
-        <TextField label="Family name" value={family} onChange={(e) => setFamily(e.target.value)} />
+        <TextField label="Family name" value={family} onChange={(e) => setFamily(e.target.value)} autoFocus />
         <TextField label="Style / subfamily" value={style} onChange={(e) => setStyle(e.target.value)} />
+      </Stack>
+      <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2}>
+        <TextField label="Author / designer (optional)" value={author} onChange={(e) => setAuthor(e.target.value)} helperText="Used for copyright + OFL template when selected below." />
+        <TextField label="Version" value={version} onChange={(e) => setVersion(e.target.value)} helperText="Stored in the font (e.g. 1.000)." />
+      </Stack>
+      <Stack spacing={1}>
+        <Typography variant="subtitle2">License (auto-created)</Typography>
+        <SegmentedControl
+          ariaLabel="New font license"
+          value={licenseChoice}
+          options={[
+            { value: 'ofl', label: 'SIL OFL 1.1', tip: 'Open Font License (recommended for sharing)' },
+            { value: 'custom', label: 'None / custom', tip: 'No license added now — set one later in Info & license' },
+          ]}
+          onChange={(v) => setLicenseChoice(v as LicenseMode)}
+        />
+        <Hint>
+          Choosing a license here does NOT establish ownership. License, author and version can be edited later via <em>Font → Info &amp; license…</em>.
+        </Hint>
       </Stack>
       <Stack spacing={1}>
         <Typography variant="subtitle2">Font type</Typography>
@@ -535,6 +579,7 @@ const KERNING_TABLES = ['GPOS', 'kern', 'kerx'];
 export function ExportDialog(props: { slot: Slot }) {
   const closeModal = useStore((s) => s.closeModal);
   const setBusy = useStore((s) => s.setBusy);
+  const toast = useStore((s) => s.toast);
   const doc = useStore((s) => s.fonts[props.slot]);
   const [preserveHinting, setPreserveHinting] = useState(true);
   const [preserveKerning, setPreserveKerning] = useState(true);
@@ -582,9 +627,34 @@ export function ExportDialog(props: { slot: Slot }) {
 
   const psName = doc.meta.postScriptName || 'font';
 
+  const downloadEsphome = async () => {
+    try {
+      setBusy('Building ESPHome package (TTF + YAML + LICENSE + README)…');
+      setRunning(true);
+      // ensure we have a fresh buffer first
+      let ttfBuf = buffer;
+      if (!ttfBuf) {
+        const out = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS, preserveHinting, preserveKerning });
+        ttfBuf = out.buffer;
+        if (!mounted.current) return;
+        setBuffer(ttfBuf);
+        setReport(out.report);
+      }
+      const res = await exportEsphomePackage(doc, { fontSize: doc.ledMatrix ? doc.ledMatrix.rows : 16 });
+      if (mounted.current) toast('success', `ESPHome package downloaded: ${res.fileName}`);
+    } catch (err) {
+      if (mounted.current) setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mounted.current) {
+        setRunning(false);
+        setBusy(null);
+      }
+    }
+  };
+
   return (
     <AppDialog
-      title={`Export TTF — Font ${props.slot} (${doc.meta.fontFamily})`}
+      title={`Export — Font ${props.slot} (${doc.meta.fontFamily})`}
       onClose={closeModal}
       maxWidth="md"
       actions={
@@ -595,6 +665,17 @@ export function ExportDialog(props: { slot: Slot }) {
           {buffer && (
             <Button variant="outlined" startIcon={<DownloadIcon />} onClick={() => downloadArrayBuffer(buffer, `${psName}.ttf`)}>
               Download {psName}.ttf ({Math.ceil(buffer.byteLength / 1024)} KB)
+            </Button>
+          )}
+          {buffer && (
+            <Button
+              variant="contained"
+              color="secondary"
+              startIcon={<DownloadIcon />}
+              onClick={downloadEsphome}
+              title="Download a ZIP with the .ttf, LICENSE.txt and a ready-to-use ESPHome YAML snippet"
+            >
+              ESPHome package .zip
             </Button>
           )}
           <Box sx={{ flex: 1 }} />
@@ -692,6 +773,19 @@ export function ExportDialog(props: { slot: Slot }) {
           )}
         </Section>
       )}
+      <Section title="ESPHome / microcontroller use">
+        <Hint>
+          The <strong>ESPHome package .zip</strong> button downloads a ready-to-use archive containing:
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            <li><code>{psName}.ttf</code> — the compiled font</li>
+            <li><code>LICENSE.txt</code> — the font license</li>
+            <li><code>esphome/{psName}.yaml</code> — a pre-filled <code>font:</code> block with the correct <code>id</code>, size and glyph list</li>
+            <li><code>esphome/glyphs.txt</code> — the set of glyphs defined in your font (ready for <code>!include</code>)</li>
+            <li><code>README.md</code> — wiring instructions</li>
+          </ul>
+          Drop the files next to your ESPHome node YAML, include the font block, flash, and you're done.
+        </Hint>
+      </Section>
       <Hint>Your original uploaded file is never modified or overwritten — export always writes a new file.</Hint>
     </AppDialog>
   );

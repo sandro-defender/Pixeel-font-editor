@@ -1,12 +1,20 @@
 /** Font naming validation + PostScript name generation. */
 import type { FontMeta } from './types';
 
+/**
+ * Blank starting point for a font's name table.
+ *
+ * `fullName`, `postScriptName` and `uniqueSubFamily` are left EMPTY on purpose:
+ * they are *derived* fields and `deriveMetaFields` fills them from the real
+ * family/style. Filling them in here with placeholder text made every new font
+ * keep "Untitled Regular" / "Untitled-Regular" no matter what it was called.
+ */
 export const EMPTY_META: FontMeta = {
   fontFamily: 'Untitled',
   fontSubFamily: 'Regular',
-  fullName: 'Untitled Regular',
-  postScriptName: 'Untitled-Regular',
-  uniqueSubFamily: 'Pixeel: Untitled Regular',
+  fullName: '',
+  postScriptName: '',
+  uniqueSubFamily: '',
   version: 'Version 1.000',
   copyright: '',
   designer: '',
