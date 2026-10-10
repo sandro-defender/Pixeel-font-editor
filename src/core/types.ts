@@ -119,7 +119,9 @@ export interface FontMeta {
 
 export interface FontSourceInfo {
   fileName: string;
-  format: 'ttf' | 'otf' | 'created';
+  format: 'ttf' | 'otf' | 'bdf' | 'created';
+  /** Web-font wrapper the file came in (decompressed on import); absent for plain sfnt files. */
+  container?: 'woff' | 'woff2';
   /** Every table tag found in the original file. */
   tables: string[];
   hasHinting: boolean;

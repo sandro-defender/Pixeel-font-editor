@@ -27,6 +27,7 @@ import { b64ToBytes } from './bitmap';
 import { checkLedFont, ledLabel } from './ledMatrix';
 import { effectiveVertical } from './verticalMetrics';
 import { allUnicodes } from './unicodeMap';
+import { unwrapFont } from './woff';
 import { buildKernTable, effectivePairs, kerningFromTtf, kerningOf, kerningToIndexPairs, parseKernTable } from './kerning';
 
 export interface TtfLike {
@@ -56,7 +57,7 @@ export function listTables(buffer: ArrayBuffer): string[] {
     view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3),
   ].map((b) => String.fromCharCode(b)).join('');
   if (tags === 'wOFF' || tags === 'wOF2') {
-    throw new Error('WOFF/WOFF2 files are not supported. Please convert to .ttf first (e.g. with fonttools or an online converter).');
+    throw new Error('This is a WOFF/WOFF2 container; unwrap it first with unwrapFont().');
   }
   if (sfnt !== 0x00010000 && tags !== 'true' && tags !== 'OTTO') {
     throw new Error('Not a TrueType/OpenType font (bad sfnt version).');
@@ -87,7 +88,8 @@ const NAME_KEYS: Array<keyof FontMeta> = [
 
 /** Import a .ttf (or CFF-based .otf) from raw bytes. */
 export async function importFont(input: ArrayBuffer | Uint8Array, fileName: string): Promise<ImportResult> {
-  const buffer = toStandaloneBuffer(input);
+  // WOFF / WOFF2 are decompressed here (client-side) to the original sfnt bytes
+  const { buffer, container } = await unwrapFont(toStandaloneBuffer(input));
   const tables = listTables(buffer);
   const hasGlyf = tables.includes('glyf');
   const hasCff = tables.includes('CFF ') || tables.includes('CFF2');
@@ -201,6 +203,7 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
     source: {
       fileName,
       format,
+      ...(container !== 'sfnt' ? { container } : {}),
       tables,
       hasHinting: !!(ttf.cvt || ttf.fpgm || ttf.prep) || glyphs.some((g) => g.instructions),
       hasKerning: !!(ttf.kern || ttf.GPOS || ttf.kerx),
@@ -220,6 +223,9 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
   const dropTargets = tables.filter((t) => !CORE_WRITABLE.has(t) && !HINTING_TABLES.has(t) && !KERNING_TABLES.has(t) && !ALWAYS_IGNORED.has(t));
   if (dropTargets.length) {
     warnings.push(`Tables that cannot be preserved on export: ${dropTargets.join(', ')}. See the export report for details.`);
+  }
+  if (container !== 'sfnt') {
+    warnings.push(`Opened from ${container === 'woff' ? 'WOFF' : 'WOFF2'}: it was decompressed in your browser (nothing was uploaded). Export writes a plain .ttf.`);
   }
   if (extraCount) warnings.push(`${extraCount} additional code point mapping(s) shared with another code point of the same glyph were imported (see the glyph's Unicode mappings).`);
   return { doc, sourceTtf: ttf, warnings };
