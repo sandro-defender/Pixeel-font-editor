@@ -25,7 +25,7 @@ import DownloadIcon from '@mui/icons-material/Download';
 import { useStore, type ModalState, type TransferMode } from '../state/store';
 import type { FontDoc, FontMeta, LedMatrixSpec, Slot } from '../core/types';
 import { createNewFont, computePixelLayout } from '../core/fontFactory';
-import { applyLedMatrix, checkMetrics, makeEmptyGlyph, resizeGrid, setGlyphBitmap } from '../state/glyphActions';
+import { applyLedMatrix, ledScaleFor, checkMetrics, makeEmptyGlyph, resizeGrid, setGlyphBitmap } from '../state/glyphActions';
 import {
   DEFAULT_LED_CELL_UNITS,
   LED_PRESETS,
@@ -37,7 +37,6 @@ import {
   conformGlyphToLed,
   defaultLedSpec,
   ledDescentRowsFor,
-  ledFontScale,
   ledLabel,
   normalizeLedSpec,
 } from '../core/ledMatrix';
@@ -1120,7 +1119,7 @@ export function RasterizeDialog(props: { slot: Slot; glyphId: string }) {
         </Typography>
         <Slider value={gridH} min={4} max={MAX_GRID} onChange={(_, v) => setGridH(v as number)} aria-labelledby="raster-height-label" />
         <Hint>
-          The grid is sized from the glyph's own ink, so thin strokes keep a full pixel instead of falling between samples. More rows = more detail; the preview updates live.
+          Pixel-font outlines that fit the selected size keep their exact grid alignment: 16px with 2px strokes becomes 8px with 1px strokes. Other outlines are sampled by coverage; smaller grids can lose detail.
         </Hint>
         {result?.refined && (
           <Alert severity="info">
@@ -1319,6 +1318,19 @@ export function LedMatrixDialog(props: { slot: Slot }) {
   const [spacing, setSpacing] = useState(initial.spacing);
   const [cell, setCell] = useState(initial.cellUnits);
   const [below, setBelow] = useState(initial.descentRows);
+  // Keep the baseline proportional when choosing a smaller/larger matrix.
+  // Remember the ratio across empty inputs and intermediate integer rounding.
+  const baselineRatio = useRef(initial.descentRows / initial.rows);
+  const changeRows = (value: number) => {
+    setRows(value);
+    if (Number.isFinite(value) && value >= 1 && value <= MAX_GRID) {
+      setBelow(Math.max(0, Math.min(Math.round(value) - 1, Math.round(value * baselineRatio.current))));
+    }
+  };
+  const changeBelow = (value: number) => {
+    setBelow(value);
+    if (Number.isFinite(value) && Number.isFinite(rows) && rows > 0) baselineRatio.current = value / rows;
+  };
 
   const specResult = useMemo<{ spec: LedMatrixSpec | null; error: string | null }>(() => {
     try {
@@ -1337,20 +1349,21 @@ export function LedMatrixDialog(props: { slot: Slot }) {
   // onto the matrix (see ledFontScale), so previewing real glyphs is the only
   // honest way to show the result before committing to it.
   const preview = useMemo<Array<{ label: string; bm: Bitmap }> | null>(() => {
-    if (!hasDoc || !spec || vectorCount === 0) return null;
+    if (!hasDoc || !spec) return null;
     const contoursOf = (g: (typeof hasDoc.glyphs)[number]) => resolveGlyphContours(g, hasDoc.glyphs);
-    const scale = ledFontScale(hasDoc, spec, contoursOf);
+    const scale = ledScaleFor(hasDoc, spec);
+    const pixelScale = hasDoc.ledMatrix ? spec.rows / hasDoc.ledMatrix.rows : undefined;
     const out: Array<{ label: string; bm: Bitmap }> = [];
     for (const ch of ['A', 'g', 'H', 'o', 'S', '8']) {
-      const g = hasDoc.glyphs.find((x) => x.unicode === ch.codePointAt(0) && x.contours.length > 0);
+      const g = hasDoc.glyphs.find((x) => x.unicode === ch.codePointAt(0) && (x.pixel || x.contours.length > 0 || x.compound));
       if (!g) continue;
-      const led = conformGlyphToLed(g, spec, contoursOf, { scale });
+      const led = conformGlyphToLed(g, spec, contoursOf, { scale, pixelScale });
       if (!led.pixel) continue;
       out.push({ label: ch, bm: Bitmap.fromB64(led.pixel.width, led.pixel.height, led.pixel.cellsB64) });
       if (out.length === 3) break;
     }
     return out.length ? out : null;
-  }, [hasDoc, spec, vectorCount]);
+  }, [hasDoc, spec]);
 
   const descentNeed = hasDoc ? ledDescentRowsFor(hasDoc, rows, (g) => resolveGlyphContours(g, hasDoc.glyphs)) : 0;
   const check = hasDoc && current ? checkLedFont(hasDoc) : null;
@@ -1422,7 +1435,7 @@ export function LedMatrixDialog(props: { slot: Slot }) {
             ))}
           </Stack>
           <Hint>
-            The whole design is scaled onto the matrix, so the letters keep their proportions instead of being clipped to the bottom of the panel. More rows or bigger cells give finer detail.
+            Changing the height scales existing pixels in both directions; the baseline follows proportionally. More rows give finer detail. Reducing below the original pixel design can lose detail.
           </Hint>
         </Section>
       )}
@@ -1433,11 +1446,11 @@ export function LedMatrixDialog(props: { slot: Slot }) {
         </Alert>
       )}
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr 1fr' }, gap: 2 }}>
-        <NumberField label="Matrix height (rows)" value={rows} onChange={setRows} min={1} max={MAX_GRID} ariaLabel="LED rows" />
+        <NumberField label="Matrix height (rows)" value={rows} onChange={changeRows} min={1} max={MAX_GRID} ariaLabel="LED rows" />
         <NumberField label="Default width (columns)" value={cols} onChange={setCols} min={1} max={MAX_GRID} ariaLabel="LED columns" />
         <NumberField label="Units per LED pixel" value={cell} onChange={setCell} min={1} helper="Integer. Preset sizes use multiples of 100 for crisp shapes." ariaLabel="Units per LED pixel" />
         <NumberField label="Letter spacing (px)" value={spacing} onChange={setSpacing} min={0} max={32} ariaLabel="LED spacing" />
-        <NumberField label="Rows below baseline" value={below} onChange={setBelow} min={0} ariaLabel="LED descent rows" />
+        <NumberField label="Rows below baseline" value={below} onChange={changeBelow} min={0} ariaLabel="LED descent rows" />
         <TextField
           select
           label="Apply preset"
@@ -1445,7 +1458,7 @@ export function LedMatrixDialog(props: { slot: Slot }) {
           onChange={(e) => {
             const p = LED_PRESETS.find((x) => x.id === e.target.value);
             if (p) {
-              setRows(p.rows);
+              changeRows(p.rows);
               setCols(p.cols);
             }
           }}

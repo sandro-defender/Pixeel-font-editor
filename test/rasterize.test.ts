@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { importFont, resolveGlyphContours } from '../src/core/fontCodec';
 import { Bitmap } from '../src/core/bitmap';
+import { traceBitmap } from '../src/core/trace';
 import { contourBoundsTight } from '../src/core/contours';
 import { defaultRasterizeFrame, rasterizeContours, rasterizeGlyphContours } from '../src/core/rasterize';
 import type { Contour, FontDoc } from '../src/core/types';
@@ -139,6 +140,35 @@ describe('rasterize vector glyph → pixel grid', () => {
         expect(pixel.height, `${ch} at ${h}px`).toBe(h);
         const bm = Bitmap.fromB64(pixel.width, pixel.height, pixel.cellsB64);
         expect(bm.count(), `${ch} at ${h}px keeps its stroke`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('keeps pixel-font strokes and counters exact at 8px and 16px', () => {
+    // An 8-row pixel design: doubled at 16px, not squeezed into 15 rows
+    // or shifted into partially covered neighbouring columns at 8px.
+    for (const rows of [
+      ['.####.', '#....#', '#....#', '#....#', '#....#', '#....#', '#....#', '.####.'],
+      ['#....#', '#....#', '#....#', '######', '#....#', '#....#', '#....#', '#....#'],
+      ['#.....', '.#....', '..#...', '...#..', '....#.', '.....#', '.....#', '.....#'],
+      ['#', '#', '#', '#', '#', '#', '#', '#'],
+    ]) {
+      const original = new Bitmap(rows[0].length, rows.length);
+      rows.forEach((row, y) => [...row].forEach((v, x) => original.set(x, 7 - y, v === '#' ? 1 : 0)));
+      // Fractional units and non-zero bearings must not move the sampling grid.
+      for (const [unit, left, bottom] of [[100, 0, 0], [62.5, -37.25, -125], [100, 135, 1700]]) {
+        const contours = traceBitmap(original).map((c) => c.map((p) => ({
+          ...p, x: left + p.x * unit, y: bottom + p.y * unit,
+        })));
+        for (const height of [8, 16]) {
+          const { pixel } = rasterizeGlyphContours(contours, metrics, height);
+          const actual = Bitmap.fromB64(pixel.width, pixel.height, pixel.cellsB64);
+          const expected = original.resized(original.width * height / 8, height, 'resample');
+          expect(actual.equals(expected), `${rows.join('/')} at ${height}px (${unit}, ${left}, ${bottom})`).toBe(true);
+          expect(pixel.unitsPerCell).toBe(unit * 8 / height);
+          expect(pixel.offsetX).toBe(left);
+          expect(-pixel.baselineRow * pixel.unitsPerCell).toBe(bottom);
+        }
       }
     }
   });
