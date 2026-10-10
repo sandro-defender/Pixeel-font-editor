@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Bitmap, MAX_GRID } from '../src/core/bitmap';
+import { Bitmap, MAX_GRID, clampPasteOffset } from '../src/core/bitmap';
 
 describe('Bitmap core ops', () => {
   for (const size of [8, 16, 32]) {
@@ -112,6 +112,36 @@ describe('Bitmap core ops', () => {
     target.paste(piece, 5, 5);
     expect(target.get(5, 5)).toBe(1);
     expect(target.get(7, 7)).toBe(1);
+  });
+
+  it('eraseRect clears a rectangle and clips it to the grid', () => {
+    const bm = new Bitmap(4, 4);
+    bm.rect(0, 0, 3, 3, 1, true);
+    bm.eraseRect(1, 1, 2, 2);
+    expect(bm.count()).toBe(16 - 4);
+    expect(bm.get(1, 1)).toBe(0);
+    expect(bm.get(2, 2)).toBe(0);
+    expect(bm.get(0, 0)).toBe(1);
+    bm.eraseRect(-2, -2, 3, 3); // mostly outside: only (0,0) is cleared
+    expect(bm.get(0, 0)).toBe(0);
+    expect(bm.count()).toBe(16 - 4 - 1);
+  });
+
+  it('clampPasteOffset keeps a block fully inside the grid', () => {
+    const block = { width: 3, height: 2 };
+    // inside: unchanged
+    expect(clampPasteOffset(8, 8, block, 2, 3)).toEqual({ x: 2, y: 3 });
+    // pushed past the right/top edge: clamped so nothing hangs over
+    expect(clampPasteOffset(8, 8, block, 7, 7)).toEqual({ x: 5, y: 6 });
+    // dragged out of the window entirely: pulled back to the nearest valid spot
+    expect(clampPasteOffset(8, 8, block, 100, -100)).toEqual({ x: 5, y: 0 });
+    expect(clampPasteOffset(8, 8, block, -50, 50)).toEqual({ x: 0, y: 6 });
+    // a block exactly the grid size cannot move at all
+    expect(clampPasteOffset(8, 8, { width: 8, height: 8 }, 4, 4)).toEqual({ x: 0, y: 0 });
+    // a block larger than the grid is pinned to the origin (paste clips it)
+    expect(clampPasteOffset(4, 4, { width: 9, height: 2 }, 3, 1)).toEqual({ x: 0, y: 1 });
+    // fractional offsets are rounded
+    expect(clampPasteOffset(8, 8, block, 2.6, 3.2)).toEqual({ x: 3, y: 3 });
   });
 
   it('round-trips base64 cell storage', () => {

@@ -186,7 +186,18 @@ export class Bitmap {
     return { x: minX, y: minY, w: maxX - minX + 1, h: maxY - minY + 1 };
   }
 
-  /** Paste `other` with its top-left at (dx, dy), clipped to this grid. */
+  /** Clear a rectangle (clipped to the grid). */
+  eraseRect(x: number, y: number, w: number, h: number): void {
+    for (let yy = 0; yy < h; yy++) {
+      for (let xx = 0; xx < w; xx++) this.set(x + xx, y + yy, 0);
+    }
+  }
+
+  /**
+   * Paste `other` with its lower-left cell at (dx, dy) (row 0 is the bottom
+   * row), clipped to this grid. 'replace' mode only writes lit cells — clear
+   * the destination rectangle first with eraseRect().
+   */
   paste(other: Bitmap, dx: number, dy: number, mode: 'replace' | 'or' = 'replace'): void {
     for (let y = 0; y < other.height; y++) {
       for (let x = 0; x < other.width; x++) {
@@ -197,7 +208,6 @@ export class Bitmap {
         if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) continue;
         if (mode === 'or') this.set(tx, ty, 1);
         else {
-          // replace mode clears destination area first (handled by caller via eraseRect)
           this.set(tx, ty, 1);
         }
       }
@@ -249,6 +259,25 @@ export class Bitmap {
     for (let i = 0; i < this.cells.length; i++) if (this.cells[i] !== other.cells[i]) return false;
     return true;
   }
+}
+
+/**
+ * Clamp an offset so a block of `bm.width × bm.height` placed at (dx, dy)
+ * stays fully inside a grid of `gridW × gridH`. Used when moving or pasting a
+ * selection: without it, pixels hanging over the grid edge are cropped away
+ * when the selection is placed (silent data loss).
+ */
+export function clampPasteOffset(
+  gridW: number,
+  gridH: number,
+  bm: { width: number; height: number },
+  dx: number,
+  dy: number,
+): { x: number; y: number } {
+  return {
+    x: Math.max(0, Math.min(gridW - bm.width, Math.round(dx))),
+    y: Math.max(0, Math.min(gridH - bm.height, Math.round(dy))),
+  };
 }
 
 export function bytesToB64(bytes: Uint8Array): string {
