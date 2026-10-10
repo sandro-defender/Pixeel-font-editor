@@ -8,7 +8,7 @@ import { makeId } from './types';
 import { cloneContours, scaleContours, contourBounds } from './contours';
 import { resolveGlyphContours, flattenedGlyph } from './fontCodec';
 import { suggestGlyphName } from './unicodeNames';
-import { conformGlyphToLed } from './ledMatrix';
+import { conformGlyphToLed, ledFontScale } from './ledMatrix';
 
 export type MetricsMode = 'preserve' | 'adapt';
 export type CollisionStrategy = 'replace' | 'skip' | 'reassign';
@@ -60,6 +60,9 @@ export function findConflicts(src: FontDoc, dst: FontDoc, glyphIds: string[]): T
 /** Copy one glyph's content into the destination font's unit space. */
 export function adaptGlyph(g: GlyphDoc, src: FontDoc, dst: FontDoc, scale: number, reassignTo?: number | null): GlyphDoc {
   const s = scale;
+  // An LED destination maps the design onto its own grid, so outlines must not
+  // be pre-scaled by the units-per-em ratio — conformGlyphToLed scales them.
+  const contourScale = dst.ledMatrix ? 1 : s;
   const copy: GlyphDoc = {
     ...g,
     id: makeId('g'),
@@ -77,7 +80,7 @@ export function adaptGlyph(g: GlyphDoc, src: FontDoc, dst: FontDoc, scale: numbe
     // Flatten safely: cross-font component references cannot be preserved
     // unless every component is also copied; flattening is the safe default.
     const flat = flattenedGlyph(g, src.glyphs);
-    copy.contours = scaleContours(flat.contours, s);
+    copy.contours = scaleContours(flat.contours, contourScale);
     copy.kind = flat.contours.length ? 'vector' : 'empty';
   } else if (g.kind === 'pixel' && g.pixel) {
     copy.pixel = {
@@ -91,7 +94,7 @@ export function adaptGlyph(g: GlyphDoc, src: FontDoc, dst: FontDoc, scale: numbe
     };
     copy.kind = 'pixel';
   } else {
-    copy.contours = scaleContours(cloneContours(g.contours), s);
+    copy.contours = scaleContours(cloneContours(g.contours), contourScale);
     copy.kind = g.contours.length ? 'vector' : g.kind === 'vector' ? 'empty' : g.kind;
     if (copy.kind === 'compound') copy.kind = 'vector';
   }
@@ -100,8 +103,14 @@ export function adaptGlyph(g: GlyphDoc, src: FontDoc, dst: FontDoc, scale: numbe
   copy.leftSideBearing = Math.round(g.leftSideBearing * s);
   if (!copy.name) copy.name = suggestGlyphName(copy.unicode) || g.name;
 
-  // Destination is an LED matrix font: snap onto its exact-pixel grid.
-  if (dst.ledMatrix) return conformGlyphToLed(copy, dst.ledMatrix, (x) => x.contours);
+  // Destination is an LED matrix font: fit the source design onto its exact
+  // pixel grid. The matrix decides the mapping, so the outlines are handed
+  // over unscaled and conformGlyphToLed applies the font-wide LED scale.
+  if (dst.ledMatrix) {
+    return conformGlyphToLed(copy, dst.ledMatrix, (x) => x.contours, {
+      scale: ledFontScale(src, dst.ledMatrix, (x) => resolveGlyphContours(x, src.glyphs)),
+    });
+  }
   return copy;
 }
 

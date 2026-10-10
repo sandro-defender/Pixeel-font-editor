@@ -43,7 +43,7 @@ import { setPixelData, snapGlyphToLed } from '../state/glyphActions';
 import { tracePixelData } from '../core/trace';
 import { contoursToPath2D } from '../render/glyphRender';
 import { checkLedFont, glyphLedIssues, ledLabel } from '../core/ledMatrix';
-import { bitmapLayer, paintBitmap, toRgba, type Rgba } from '../render/bitmapCanvas';
+import { bitmapLayer, ledDotSize, paintBitmap, paintLedDots, toRgba, type Rgba } from '../render/bitmapCanvas';
 
 /** Clipboard shared by all editor instances (pixels only). */
 let appClipboard: Bitmap | null = null;
@@ -480,33 +480,9 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
 
     const ledCanvas = ledRef.current;
     if (!ledCanvas) return;
-    const dot = Math.max(3, Math.floor(160 / Math.max(display.width, display.height)));
-    ledCanvas.width = display.width * dot + 4;
-    ledCanvas.height = display.height * dot + 4;
-    const ctx = ledCanvas.getContext('2d');
-    if (!ctx) return;
-    ctx.fillStyle = '#0b0d10';
-    ctx.fillRect(0, 0, ledCanvas.width, ledCanvas.height);
-    const r = dot * 0.36;
-    for (let y = 0; y < display.height; y++) {
-      for (let x = 0; x < display.width; x++) {
-        const lit = display.get(x, y) === 1;
-        const cx = 2 + x * dot + dot / 2;
-        const cy = 2 + (display.height - 1 - y) * dot + dot / 2;
-        ctx.beginPath();
-        ctx.arc(cx, cy, r, 0, Math.PI * 2);
-        if (lit) {
-          ctx.shadowColor = '#ff6a2b';
-          ctx.shadowBlur = dot >= 6 ? dot * 0.7 : 0;
-          ctx.fillStyle = '#ff6a2b';
-        } else {
-          ctx.shadowBlur = 0;
-          ctx.fillStyle = '#23262e';
-        }
-        ctx.fill();
-      }
-    }
-    ctx.shadowBlur = 0;
+    // cap the dot size: on a small matrix (5×7) huge dots read as blobs
+    // instead of a font image
+    paintLedDots(ledCanvas, display, ledDotSize(display, 96));
   }, [display, tick, pal]);
 
   // ------------------------------------------------------------ pointer

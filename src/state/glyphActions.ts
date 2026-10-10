@@ -7,7 +7,7 @@ import { Bitmap, bytesToB64 } from '../core/bitmap';
 import { suggestGlyphName } from '../core/unicodeNames';
 import { validateUnicodeAssignment } from '../core/transfer';
 import { contourBounds } from '../core/contours';
-import { conformGlyphToLed, ledAdvance, ledMetrics, normalizeLedSpec } from '../core/ledMatrix';
+import { conformGlyphToLed, designSpan, ledAdvance, ledMetrics, ledScaleFromSpan, normalizeLedSpec } from '../core/ledMatrix';
 
 export function withGlyph(doc: FontDoc, glyphId: string, next: GlyphDoc): FontDoc {
   return { ...doc, glyphs: doc.glyphs.map((g) => (g.id === glyphId ? next : g)) };
@@ -138,17 +138,41 @@ function contoursIn(doc: FontDoc): (g: GlyphDoc) => Contour[] {
 }
 
 /**
+ * Scale that maps this font's design onto an LED matrix. Vector and composite
+ * glyphs are rasterized through it, so a font with a 1000–2048 unit em keeps
+ * its full height on a small matrix instead of being clipped to its bottom
+ * rows (which used to make every letter disappear).
+ *
+ * Once the outlines are gone (a converted font), the span recorded when LED
+ * mode was enabled is used, so re-snapping a single glyph still lands on the
+ * same scale as the bulk conversion.
+ */
+function ledScaleFor(doc: FontDoc, spec: LedMatrixSpec): number {
+  // The design recorded when LED mode was enabled is the reference — after a
+  // conversion the font's own metrics are the matrix's, so they would map the
+  // design 1:1 and undo the fitting.
+  const source =
+    doc.ledSource ?? { span: designSpan(doc, contoursIn(doc)), ascent: doc.metrics.ascent, descent: doc.metrics.descent };
+  return ledScaleFromSpan(source.span, spec, source.ascent, source.descent);
+}
+
+/**
  * Turn a font into an LED matrix (exact-pixel) font, or switch LED mode off
  * (`null` keeps all glyph data and metrics as they are).
  * Turning it on snaps every glyph to the matrix: pixel grids are re-anchored,
- * vector outlines are rasterized and metrics become whole pixels.
+ * vector outlines are scaled onto the matrix and rasterized, and metrics
+ * become whole pixels.
  */
 export function applyLedMatrix(doc: FontDoc, spec: LedMatrixSpec | null): FontDoc {
-  if (!spec) return { ...doc, ledMatrix: null };
+  if (!spec) return { ...doc, ledMatrix: null, ledSource: null };
   const s = normalizeLedSpec(spec);
   const contoursOf = contoursIn(doc);
-  const glyphs = doc.glyphs.map((g) => (g.name === '.notdef' ? g : conformGlyphToLed(g, s, contoursOf)));
-  return { ...doc, ledMatrix: s, metrics: ledMetrics(s), glyphs };
+  const scale = ledScaleFor(doc, s);
+  const glyphs = doc.glyphs.map((g) => (g.name === '.notdef' ? g : conformGlyphToLed(g, s, contoursOf, { scale })));
+  // Remember the design so later single-glyph snaps use the same scale.
+  const hasVector = doc.glyphs.some((g) => !g.pixel && (g.kind === 'vector' || g.kind === 'compound' || g.contours.length > 0));
+  const ledSource = hasVector ? { span: designSpan(doc, contoursOf), ascent: doc.metrics.ascent, descent: doc.metrics.descent } : doc.ledSource ?? null;
+  return { ...doc, ledMatrix: s, ledSource, metrics: ledMetrics(s), glyphs };
 }
 
 /** Snap a single glyph onto the font's LED matrix (rasterizes vector outlines). */
@@ -156,7 +180,8 @@ export function snapGlyphToLed(doc: FontDoc, glyphId: string): FontDoc {
   if (!doc.ledMatrix) throw new Error('This font is not an LED matrix font.');
   const spec = doc.ledMatrix;
   const contoursOf = contoursIn(doc);
-  return withGlyphMap(doc, glyphId, (g) => (g.name === '.notdef' ? g : conformGlyphToLed(g, spec, contoursOf)));
+  const scale = ledScaleFor(doc, spec);
+  return withGlyphMap(doc, glyphId, (g) => (g.name === '.notdef' ? g : conformGlyphToLed(g, spec, contoursOf, { scale })));
 }
 
 /**

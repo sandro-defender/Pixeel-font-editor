@@ -65,6 +65,45 @@ export function paintBitmap(target: HTMLCanvasElement, bm: Bitmap, scale: number
   ctx.drawImage(bitmapLayer(bm, opts), 0, 0, target.width, target.height);
 }
 
+/**
+ * Paint a bitmap as an LED panel: one round dot per cell on a dark panel,
+ * lit dots glowing. Gives the LED matrix modes a physical preview.
+ */
+export function paintLedDots(target: HTMLCanvasElement, bm: Bitmap, dot: number, opts?: { pad?: number; glow?: boolean }): void {
+  const pad = opts?.pad ?? 2;
+  const glow = opts?.glow ?? true;
+  target.width = bm.width * dot + pad * 2;
+  target.height = bm.height * dot + pad * 2;
+  const ctx = target.getContext('2d');
+  if (!ctx) return;
+  ctx.fillStyle = '#0b0d10';
+  ctx.fillRect(0, 0, target.width, target.height);
+  const r = Math.max(0.8, dot * 0.36);
+  for (let y = 0; y < bm.height; y++) {
+    for (let x = 0; x < bm.width; x++) {
+      const cx = pad + x * dot + dot / 2;
+      const cy = pad + (bm.height - 1 - y) * dot + dot / 2; // row 0 sits at the bottom
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      if (bm.get(x, y) === 1) {
+        ctx.shadowColor = '#ff6a2b';
+        ctx.shadowBlur = glow && dot >= 6 ? dot * 0.7 : 0;
+        ctx.fillStyle = '#ff6a2b';
+      } else {
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#23262e';
+      }
+      ctx.fill();
+    }
+  }
+  ctx.shadowBlur = 0;
+}
+
+/** Dot size that fits a bitmap into roughly `maxPx` pixels. */
+export function ledDotSize(bm: Bitmap, maxPx = 160): number {
+  return Math.max(3, Math.floor(maxPx / Math.max(bm.width, bm.height)));
+}
+
 /** Parse a CSS colour like "#rrggbb" or "rgb(r, g, b)" into RGBA bytes (defaults to opaque black). */
 export function toRgba(color: string, alpha = 255): Rgba {
   const hex = color.trim().match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);

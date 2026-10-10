@@ -133,6 +133,13 @@ export interface FontDoc {
   sourceRef: string | null;
   /** Present (non-null) when the font is an LED matrix / exact-pixel font. */
   ledMatrix?: LedMatrixSpec | null;
+  /**
+   * The design that was mapped onto the LED matrix, remembered when LED mode
+   * is turned on. Glyphs re-snapped later (a reverted outline, a pasted glyph)
+   * are then scaled exactly like the bulk conversion, even though the original
+   * outlines have been replaced by pixels.
+   */
+  ledSource?: { span: number; ascent: number; descent: number } | null;
 }
 
 export interface WorkspaceSettings {

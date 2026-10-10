@@ -45,7 +45,7 @@ npm run dev          # http://localhost:5173
 ### Tests
 
 ```bash
-npm test             # 79 unit/integration tests (vitest)
+npm test             # 93 unit/integration tests (vitest)
 npm run verify:pages # builds with a subpath base and serves it under /test-repo/
 ```
 
@@ -58,6 +58,13 @@ LED matrix validation (exact pixels, advance warnings, height locking), text-art
 and column-byte round trips, LED conform on transfer, move transfers with one
 linked undo/redo and collision-skipped glyphs, and the pixel editor's keyboard
 cursor (one undo per Ctrl+Z).
+
+Vector→pixel conversion has its own coverage: thin marks that sit off the
+baseline (underscores, minus signs, hairline stems) must never rasterize to an
+empty grid, the frame is derived from the glyph's own ink rather than the line
+metrics, and converting a whole font to an LED matrix maps the design onto the
+matrix (no clipped letter tops, no vanished glyphs) — including re-snapping a
+single glyph afterwards and copying glyphs into an LED font.
 
 ## Building
 
