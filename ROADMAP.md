@@ -38,10 +38,10 @@ Goal: Make daily editing faster, more keyboard-friendly, and more discoverable.
 
 ---
 
-## Step 2 — Pro Pixel Editing Tools
+## Step 2 — Pro Pixel Editing Tools ✅ DONE
 Goal: Bring Pixeel's pixel editor to parity with dedicated pixel art tools.
 
-### Slice 2.1 — Symmetry & Mirroring
+### Slice 2.1 — Symmetry & Mirroring ✅ done
 - **What:** Symmetry modes: horizontal, vertical, quad, radial. Toggle in pixel toolbar, live preview of mirrored strokes. Works with pencil, eraser, line, rect.
 - **Acceptance:**
   - Symmetry state per glyph, persisted in project file.
@@ -49,7 +49,7 @@ Goal: Bring Pixeel's pixel editor to parity with dedicated pixel art tools.
   - Visual symmetry guides.
   - Tests for symmetry math.
 
-### Slice 2.2 — Tile Preview & Seamless Mode
+### Slice 2.2 — Tile Preview & Seamless Mode ✅ done
 - **What:** Tile preview panel showing glyph repeated 3×3, useful for pattern fonts and borders. Seamless mode highlights edge pixels that would tile.
 - **Acceptance:**
   - Toggle in editor toolbar.
@@ -57,7 +57,7 @@ Goal: Bring Pixeel's pixel editor to parity with dedicated pixel art tools.
   - Works for both pixel and outline preview.
   - Tests.
 
-### Slice 2.3 — Magic Wand & Improved Fill
+### Slice 2.3 — Magic Wand & Improved Fill ✅ done
 - **What:** Magic wand selection (contiguous similar color), tolerance slider, contiguous fill option, fill preview. Improves existing fill tool.
 - **Acceptance:**
   - Wand selects contiguous empty or filled region.
@@ -72,7 +72,7 @@ Goal: Bring Pixeel's pixel editor to parity with dedicated pixel art tools.
 ## Step 3 — Typography & Metrics Control
 Goal: Full control over spacing and vertical metrics.
 
-### Slice 3.1 — Visual Advance & Bearings Editor
+### Slice 3.1 — Visual Advance & Bearings Editor ✅ done
 - **What:** Drag handles in editor to adjust advance width, left and right side bearings visually. Numeric inputs remain. Snap to pixel grid option.
 - **Acceptance:**
   - Dragging updates metrics live, undoable.
@@ -80,7 +80,7 @@ Goal: Full control over spacing and vertical metrics.
   - Guides show bearing lines.
   - Tests for metric updates.
 
-### Slice 3.2 — Kerning Pairs Editor
+### Slice 3.2 — Kerning Pairs Editor ✅ done
 - **What:** UI to view, add, edit, delete kerning pairs (GPOS/kern). Live preview in text preview panel with pair highlighting. Import existing kerning from font.
 - **Acceptance:**
   - List of pairs with search, sorted by frequency.
@@ -89,7 +89,7 @@ Goal: Full control over spacing and vertical metrics.
   - Export preserves kerning, re-import round-trips.
   - Tests.
 
-### Slice 3.3 — Vertical Metrics Editor
+### Slice 3.3 — Vertical Metrics Editor ✅ done
 - **What:** Dialog to edit ascent, descent, lineGap, typoAsc/Desc, winAsc/Desc, with visual preview of line box and baseline. Presets for common ratios.
 - **Acceptance:**
   - Visual preview of metrics.
@@ -157,7 +157,7 @@ Goal: Support more formats for broader adoption.
 
 ## Current Progress
 - Step 1: ✅ done (Command palette, Metrics HUD, Onboarding & Help)
-- Step 2: ⬜ not started
-- Step 3: ⬜ not started
+- Step 2: ✅ done (Symmetry & Mirroring, Tile Preview & Seamless, Magic Wand & Improved Fill)
+- Step 3: ✅ done (Visual Advance & Bearings Editor, Kerning Pairs Editor, Vertical Metrics Editor)
 - Step 4: ⬜ not started
 - Step 5: ⬜ not started

@@ -15,7 +15,7 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | Workspaces | Two independent fonts (Font A / Font B), side-by-side comparison, per-font export |
 | Import | `.ttf` via file picker or drag & drop (`.otf`/CFF is converted to quadratic curves); **pixel fonts are detected** — the importer finds the cell size at which every outline lands on the lattice and offers a lossless conversion |
 | Glyph browser | Searchable grid with previews, Unicode values and names; create / duplicate / delete; re-assign Unicode with conflict validation; `.notdef` is always preserved; unmapped glyphs are visually distinct; add the 33 modern Mkhedruli starter glyphs or all 172 assigned Georgian letters across Mkhedruli, Mtavruli, Asomtavruli and Nuskhuri |
-| Pixel editor | 8×8, 16×16, 32×32 or custom grids (≤128); pencil, eraser, fill, line, rectangle, selection; copy/cut/paste/move; shift, flip, rotate, invert, clear; undo/redo; zoom with grid lines; **keyboard cursor** (arrows move it, Space paints, Shift+Space erases, T toggles); **hover coordinate readout** and **index rulers**; **right-drag erases**; reference overlay for tracing; touch/pointer drawing; live actual-size + enlarged previews; baseline/ascent/descent/origin/advance guides; explicit crop/pad vs resample when resizing a grid; text-art and LED column-byte entry (*Pixel code…*); **local glyph designer** with reference fonts, Georgian character sets, and width/height/weight/slant/position controls |
+| Pixel editor | 8×8, 16×16, 32×32 or custom grids (≤128); pencil, eraser, fill, **magic wand (W)**, line, rectangle, selection; **symmetry modes** (H/V/quad/radial) with guides; **tile preview 3×3 + seamless**; copy/cut/paste/move; shift, flip, rotate, invert, clear; undo/redo; zoom with grid lines; **keyboard cursor** (arrows move it, Space paints, Shift+Space erases, T toggles); **hover coordinate readout** and **index rulers**; **right-drag erases**; reference overlay for tracing; touch/pointer drawing; live actual-size + enlarged previews; baseline/ascent/descent/origin/advance guides; explicit crop/pad vs resample when resizing a grid; text-art and LED column-byte entry (*Pixel code…*); **local glyph designer** with reference fonts, Georgian character sets, and width/height/weight/slant/position controls |
 | Reference fonts | Drop TTF/OTF examples into `public/fonts/` and index them with `npm run fonts:catalog` (production builds index automatically), or load a font file directly in the glyph designer; sample any supported letter/number and place the styled bitmap into the selected pixel glyph. Everything stays in the browser. |
 | LED matrix fonts | Optional exact-pixel mode per font: fixed grid height, one integer unit size per lit pixel, glyph origins on whole-pixel boundaries, advance = (width + spacing) × pixel size; an LED dot preview; *Snap to LED grid* for vector glyphs; export checks that verify every glyph (errors for off-grid data, warnings for advances) |
 | Outline editor | Imported vector glyphs keep their original outlines; select contours & points, move points, reverse or delete contours; edit advance width and side bearings; composite glyphs detected and preserved (or explicitly flattened); **convert to pixels** for one glyph or the whole font, on one shared grid (see [Converting a font to pixels](#converting-a-font-to-pixels)); revert to the original outline |
@@ -30,6 +30,12 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | Command palette | **Ctrl/Cmd+K** fuzzy search over 20+ actions (new font, export, dialogs, undo/redo, switch font, theme, grid toggle, etc.) + **glyph jump** by character or U+ code (e.g. `A`, `U+10D0`) |
 | Metrics HUD | Toggle with **H** — overlay shows advance width, LSB/RSB, bbox, pixel count, grid size, cursor, selection, zoom; enhanced status bar shows cursor (x,y), selection (w×h), advance, bearings, zoom, grid state |
 | Onboarding & help | First-run **onboarding checklist** (stored in localStorage, dismissable); **searchable help dialog** with all shortcuts grouped by category; tooltips on every primary toolbar button |
+| Symmetry & mirroring | **Per-glyph symmetry**: none / horizontal / vertical / quad / radial; live mirrored strokes for pencil/eraser/line/rect; visual guides; undo is one step; persisted in project |
+| Tile preview | **3×3 tiled preview** of current glyph, live updates; **seamless mode** highlights edge pixels; toggle in toolbar |
+| Magic wand & fill | **Wand tool (W)** selects contiguous empty/filled region (BFS 4-dir); **Shift+click adds, Alt+click subtracts**; fill respects active selection; flood fill toggle |
+| Advance & bearings editor | **Drag handles** for the advance width, left and right side bearings in both the pixel editor (ruler band) and the outline editor (origin and advance lines); live while dragging, **one undo step per drag**; optional **snap to the pixel grid** (or a vector step); numeric inputs stay in the Metrics panel; bearing guides drawn in the editors |
+| Kerning pairs | **Kerning dialog** (Font menu, Metrics panel, preview panel, command palette): search the list (sorted by how common the pair is), add a pair by typing two characters or code points (`A`, `U+0056`, `86`), edit with a slider **and** a numeric field, delete; pairs are imported from the font's `kern` / `GPOS` tables; the preview panel applies kerning live and can **highlight kerned pairs** |
+| Vertical metrics | **Vertical metrics dialog** (Font menu, command palette): ascent, descent, line gap, OS/2 typo ascender/descender/line gap, win ascent/descent and *Use typo metrics*; live **line-box preview** (hhea blue, typo green, win orange, baseline, line gap); **presets** (tight, pixel, Arial-, Roboto-, Times-like, airy); sync typo/win to hhea; validation (ascent > 0, descent ≤ 0, whole numbers, 16-bit ranges) with clipping and platform-mismatch warnings; one undo step; saved in project files; imported OS/2 values are preserved on export |
 
 ## Using fonts with ESPHome
 
@@ -155,7 +161,7 @@ npm run dev          # http://localhost:5173
 ### Tests
 
 ```bash
-npm test             # 168 unit/integration tests (vitest)
+npm test             # 262 unit/integration tests (vitest)
 npm run verify:pages # builds with a subpath base and serves it under /test-repo/
 ```
 
@@ -168,6 +174,12 @@ LED matrix validation (exact pixels, advance warnings, height locking), text-art
 and column-byte round trips, LED conform on transfer, move transfers with one
 linked undo/redo and collision-skipped glyphs, and the pixel editor's keyboard
 cursor (one undo per Ctrl+Z).
+
+Typography coverage: bearing/advance drag math and snapping, the drag handles in
+both editors (one undo per drag), kerning parse/write for `kern` and `GPOS`
+(Lato), kerning edit/import/export round trips and the dialog, vertical-metrics
+validation, presets, OS/2 export/re-import (Lato keeps its own values) and the
+dialog.
 
 New-font identity is covered too: the derived names (full / PostScript / unique)
 follow the family and style instead of keeping placeholders, and author, version
@@ -256,6 +268,15 @@ VITE_BASE_PATH=/my-subpath/ npm run build
   `cvt /fpgm/prep/gasp` (hinting) and `GPOS/kern/kerx` (kerning).
   Every export is **re-parsed and validated** (glyph count, unitsPerEm, sampled
   unicode→glyph→advance checks, name table, `.notdef`) and you see the report.
+- **Kerning**: an unedited font's own `kern`/`GPOS` bytes pass through untouched.
+  After you edit pairs, the kerning is exported as a classic `kern` table (a
+  `GPOS`/`kerx` table in the source is replaced, and the export report says so);
+  pairs with value 0 are not written. Class-based `GPOS` kerning in big fonts is
+  expanded on import up to 25 000 pairs (Latin first); editing a truncated font
+  rewrites kerning from only the loaded pairs and the dialog warns about it.
+- **Vertical metrics**: hhea, OS/2 typo, OS/2 win values and the *Use typo
+  metrics* flag (fsSelection bit 7) are written from the editor; imported fonts keep
+  their own OS/2 values.
 - **Unedited glyphs keep their original data**, including hinting instructions.
   Editing a glyph's outline invalidates its instructions (reported at export).
 - **Composite glyphs** are preserved as composites while unedited; the editor
@@ -320,7 +341,8 @@ Use **Shift+arrows** for that.
 ## Known limitations
 
 - One Unicode code point per glyph (fonts with multi-unicode glyphs keep the first mapping; noted on import).
-- Vertical metrics editing is limited to ascent/descent/lineGap/unitsPerEm. LED matrix fonts derive these from the matrix, so they are read-only there.
+- Units per em is read-only in the vertical metrics dialog. LED matrix fonts derive ascent/descent/line gap from the matrix, so those three are read-only there (typo and win values stay editable).
+- Kerning is pair-based: class kerning, contextual positioning and other GPOS features are not editable.
 - LED matrix mode fixes the grid height for every glyph. Switching a font into LED mode rasterizes vector glyphs onto the grid, so their outlines are replaced by pixels (undo reverts this).
 - Transfers keep each standard pixel glyph's own grid size. Only an LED destination resamples glyphs onto its grid. Resampling uses nearest-neighbour, which can alias.
 - Pixel-grid placement per glyph is linear (uniform cell size).

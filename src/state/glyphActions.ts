@@ -7,6 +7,8 @@ import { Bitmap, bytesToB64 } from '../core/bitmap';
 import { suggestGlyphName } from '../core/unicodeNames';
 import { validateUnicodeAssignment } from '../core/transfer';
 import { contourBounds } from '../core/contours';
+import { dropKerningFor, scaleKerning } from '../core/kerning';
+import { checkVerticalMetrics } from '../core/verticalMetrics';
 import { conformGlyphToLed, designSpan, ledAdvance, ledMetrics, ledScaleFromSpan, normalizeLedSpec } from '../core/ledMatrix';
 
 export function withGlyph(doc: FontDoc, glyphId: string, next: GlyphDoc): FontDoc {
@@ -29,7 +31,7 @@ export function removeGlyphs(doc: FontDoc, ids: string[]): FontDoc {
     }
     return g;
   });
-  return { ...doc, glyphs: fixed };
+  return dropKerningFor({ ...doc, glyphs: fixed }, ids);
 }
 
 export function duplicateGlyph(doc: FontDoc, glyphId: string, insertAfter = true): { doc: FontDoc; copy: GlyphDoc } {
@@ -116,6 +118,15 @@ export function setLeftSideBearing(doc: FontDoc, glyphId: string, lsb: number): 
   });
 }
 
+/**
+ * Set advance and LSB together (the visual bearings editor): one document
+ * update, so a single drag is a single undo step. The LSB shift translates the
+ * glyph content exactly like `setLeftSideBearing`.
+ */
+export function setGlyphMetrics(doc: FontDoc, glyphId: string, m: { advance: number; lsb: number }): FontDoc {
+  return setAdvance(setLeftSideBearing(doc, glyphId, m.lsb), glyphId, m.advance);
+}
+
 export function resizeGrid(doc: FontDoc, glyphId: string, width: number, height: number, mode: 'crop' | 'center' | 'resample'): FontDoc {
   const g = doc.glyphs.find((x) => x.id === glyphId);
   if (!g?.pixel) throw new Error('Glyph has no pixel grid.');
@@ -176,7 +187,9 @@ export function applyLedMatrix(doc: FontDoc, spec: LedMatrixSpec | null): FontDo
   // Remember the design so later single-glyph snaps use the same scale.
   const hasVector = doc.glyphs.some((g) => !g.pixel && (g.kind === 'vector' || g.kind === 'compound' || g.contours.length > 0));
   const ledSource = hasVector ? { span: designSpan(doc, contoursOf), ascent: doc.metrics.ascent, descent: doc.metrics.descent } : doc.ledSource ?? null;
-  return { ...doc, ledMatrix: s, ledSource, metrics: ledMetrics(s), glyphs };
+  const metrics = ledMetrics(s);
+  // pair values are in font units: follow the new em size
+  return scaleKerning({ ...doc, ledMatrix: s, ledSource, metrics, glyphs }, metrics.unitsPerEm / doc.metrics.unitsPerEm);
 }
 
 /** Snap a single glyph onto the font's LED matrix (rasterizes vector outlines). */
@@ -240,6 +253,7 @@ export function checkMetrics(metrics: FontDoc['metrics']): FontDoc['metrics'] {
   if (metrics.ascent <= 0) throw new Error('Ascent must be positive.');
   if (metrics.descent >= 0) throw new Error('Descent must be negative.');
   return {
+    ...metrics, // keeps the optional OS/2 typo / win values
     unitsPerEm: Math.round(metrics.unitsPerEm),
     ascent: Math.round(metrics.ascent),
     descent: Math.round(metrics.descent),
@@ -252,6 +266,11 @@ export function updateMetrics(doc: FontDoc, metrics: FontDoc['metrics']): FontDo
   return { ...doc, metrics: checked };
 }
 
+/** Set all vertical metrics (hhea + OS/2 typo / win) at once; validated, one undoable edit. */
+export function setVerticalMetrics(doc: FontDoc, metrics: FontDoc['metrics']): FontDoc {
+  return { ...doc, metrics: checkVerticalMetrics(metrics) };
+}
+
 /** Give an outline-less glyph a blank pixel grid matching the font's template. */
 export function initializePixelGrid(doc: FontDoc, glyphId: string): FontDoc {
   const template = doc.glyphs.find((g) => g.pixel)?.pixel;
@@ -261,6 +280,10 @@ export function initializePixelGrid(doc: FontDoc, glyphId: string): FontDoc {
       ? g
       : { ...g, pixel: { ...template, cellsB64: bytesToB64(new Uint8Array(template.width * template.height)) }, kind: 'pixel' },
   );
+}
+
+export function setGlyphSymmetry(doc: FontDoc, glyphId: string, symmetry: import('../core/types').SymmetryMode): FontDoc {
+  return withGlyphMap(doc, glyphId, (g) => ({ ...g, symmetry }));
 }
 
 export function makeEmptyGlyph(doc: FontDoc, unicode: number | null, name?: string): GlyphDoc {

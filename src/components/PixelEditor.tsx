@@ -19,6 +19,7 @@ import FormatColorFillIcon from '@mui/icons-material/FormatColorFill';
 import HorizontalRuleIcon from '@mui/icons-material/HorizontalRule';
 import CropSquareIcon from '@mui/icons-material/CropSquare';
 import HighlightAltIcon from '@mui/icons-material/HighlightAlt';
+import ColorizeIcon from '@mui/icons-material/Colorize';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import ContentCutIcon from '@mui/icons-material/ContentCut';
 import ContentPasteIcon from '@mui/icons-material/ContentPaste';
@@ -37,10 +38,16 @@ import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import KeyboardIcon from '@mui/icons-material/Keyboard';
 import AspectRatioIcon from '@mui/icons-material/AspectRatio';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
+import StraightenIcon from '@mui/icons-material/Straighten';
+import AdjustIcon from '@mui/icons-material/Adjust';
 import { useStore } from '../state/store';
 import type { GlyphDoc, Slot } from '../core/types';
 import { Bitmap, clampPasteOffset } from '../core/bitmap';
-import { setPixelData, snapGlyphToLed } from '../state/glyphActions';
+import { wandSelect, mergeWandIntoSelection, fillWithSelection } from '../core/wand';
+import { TilePreview } from './TilePreview';
+import { symmetricPoints, paintWithSymmetry, type SymmetryMode } from '../core/symmetry';
+import { setPixelData, snapGlyphToLed, setGlyphSymmetry, setGlyphMetrics } from '../state/glyphActions';
+import { clamp, computeRSB, dragAdvance, dragOrigin, sameMetrics, type HMetrics } from '../core/metrics';
 import { tracePixelData } from '../core/trace';
 import { contoursToPath2D } from '../render/glyphRender';
 import { checkLedFont, glyphLedIssues, ledLabel } from '../core/ledMatrix';
@@ -51,8 +58,12 @@ let appClipboard: Bitmap | null = null;
 
 /** Pixels reserved for the rulers along the top and left edges. */
 const RULER = 22;
+/** Horizontal margin left and right of the grid so origin / advance lines outside the grid stay reachable. */
+export const PAD = 26;
+/** Pointer distance (canvas px) within which a bearing handle in the top ruler is grabbed. */
+const HANDLE_HIT = 9;
 
-type Tool = 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select';
+type Tool = 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select' | 'wand';
 
 interface Cell {
   /** column, 0 = left */
@@ -80,6 +91,7 @@ type DragState =
   | { kind: 'paint'; value: number; last: Cell; label: string }
   | { kind: 'shape'; value: number; start: Cell; cur: Cell }
   | { kind: 'marquee'; start: Cell; cur: Cell }
+  | { kind: 'metrics'; which: 'origin' | 'advance'; startPx: number; start: HMetrics; latest: HMetrics }
   | { kind: 'move'; startX: number; startY: number; origX: number; origY: number; x: number; y: number; bm: Bitmap };
 
 interface Pal {
@@ -119,10 +131,11 @@ function usePalette(): Pal {
 const TOOLS: Array<{ tool: Tool; label: string; tip: string; icon: React.ReactNode }> = [
   { tool: 'pencil', label: 'Pencil', tip: 'Pencil — draw pixels (B). Right-drag erases.', icon: <EditIcon fontSize="small" /> },
   { tool: 'eraser', label: 'Eraser', tip: 'Eraser — remove pixels (E)', icon: <FormatClearIcon fontSize="small" /> },
-  { tool: 'fill', label: 'Flood fill', tip: 'Flood fill (F)', icon: <FormatColorFillIcon fontSize="small" /> },
+  { tool: 'fill', label: 'Flood fill', tip: 'Flood fill (F) — respects selection if active', icon: <FormatColorFillIcon fontSize="small" /> },
   { tool: 'line', label: 'Line', tip: 'Line tool (L)', icon: <HorizontalRuleIcon fontSize="small" /> },
   { tool: 'rect', label: 'Rectangle', tip: 'Rectangle tool (R)', icon: <CropSquareIcon fontSize="small" /> },
   { tool: 'select', label: 'Select and move', tip: 'Select / move pixels (M). Ctrl+A selects all. The selection stays inside the grid — no pixels are lost.', icon: <HighlightAltIcon fontSize="small" /> },
+  { tool: 'wand', label: 'Magic wand', tip: 'Magic wand — select contiguous similar pixels (W). Shift+click adds, Alt+click subtracts.', icon: <ColorizeIcon fontSize="small" /> },
 ];
 
 /** Icon button with a tooltip; wrapped in a span so disabled buttons still show their tip. */
@@ -147,9 +160,16 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const setZoom = useStore((s) => s.setZoom);
   const setOverlayGlyph = useStore((s) => s.setOverlayGlyph);
   const toggleGridLines = useStore((s) => s.toggleGridLines);
+  const toggleTilePreview = useStore((s) => s.toggleTilePreview);
   const setStoreCursor = useStore((s) => s.setCursor);
   const setStoreSelectionRect = useStore((s) => s.setSelectionRect);
   const toggleMetricsHud = useStore((s) => s.toggleMetricsHud);
+  const snapToPixelGrid = useStore((s) => s.snapToPixelGrid);
+  const showBearingHandles = useStore((s) => s.showBearingHandles);
+  const toggleSnapToPixelGrid = useStore((s) => s.toggleSnapToPixelGrid);
+  const toggleBearingHandles = useStore((s) => s.toggleBearingHandles);
+  const liveMetricsAll = useStore((s) => s.liveMetrics);
+  const setLiveMetrics = useStore((s) => s.setLiveMetrics);
   const toast = useStore((s) => s.toast);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
@@ -188,6 +208,10 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const liveRef = useRef<Bitmap | null>(null); // working copy during a paint stroke
   const dragRef = useRef<DragState | null>(null);
   const bump = () => setTick((t) => t + 1);
+  const [handleHover, setHandleHover] = useState(false);
+  const liveMetrics = liveMetricsAll && liveMetricsAll.slot === slot && liveMetricsAll.glyphId === glyph.id ? liveMetricsAll : null;
+  // never leave a half-finished drag readout behind
+  useEffect(() => () => setLiveMetrics(null), [setLiveMetrics]);
 
   // a selection only means something for the pixel data it was cut from
   const sel = rawSel && pixel && rawSel.afterB64 === pixel.cellsB64 ? rawSel : null;
@@ -275,7 +299,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     const rect = canvas.getBoundingClientRect();
     const sx = canvas.width / rect.width;
     const sy = canvas.height / rect.height;
-    const px = (e.clientX - rect.left) * sx - RULER;
+    const px = (e.clientX - rect.left) * sx - RULER - PAD;
     const py = (e.clientY - rect.top) * sy - RULER;
     const x = Math.floor(px / zoom);
     const screenRow = Math.floor(py / zoom);
@@ -284,8 +308,42 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     return { x, y, inside };
   };
 
-  /** Fill / flood region at a cell. Left: toggles the region; right: clears it. */
+  /** Pointer position in canvas pixels. */
+  const canvasPoint = (e: { clientX: number; clientY: number }) => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return { px: (e.clientX - rect.left) * (canvas.width / rect.width), py: (e.clientY - rect.top) * (canvas.height / rect.height) };
+  };
+
+  /** Which bearing handle (a marker in the top ruler) is under the pointer, if any. */
+  const handleAt = (e: { clientX: number; clientY: number }): 'origin' | 'advance' | null => {
+    if (!pixel || !showBearingHandles) return null;
+    const { px, py } = canvasPoint(e);
+    if (py < 0 || py > RULER + 2) return null;
+    const W = gridW * zoom;
+    const upc = pixel.unitsPerCell;
+    const at = (cells: number) => RULER + PAD + clamp(cells * zoom, -PAD + 7, W + PAD - 7);
+    const dOrigin = Math.abs(px - at(-pixel.offsetX / upc));
+    const dAdvance = Math.abs(px - at((glyph.advanceWidth - pixel.offsetX) / upc));
+    if (Math.min(dOrigin, dAdvance) > HANDLE_HIT) return null;
+    return dAdvance <= dOrigin ? 'advance' : 'origin';
+  };
+
+  /** Fill / flood region at a cell. Left: toggles the region; right: clears it. Respects selection if active. */
   const floodAt = (cell: Cell, right: boolean) => {
+    if (!baseBitmap) return;
+    // If selection active, fill the selection area
+    if (sel) {
+      const value = right ? 0 : 1;
+      const work = withSel(baseBitmap);
+      for (let sy = 0; sy < sel.bm.height; sy++) {
+        for (let sx = 0; sx < sel.bm.width; sx++) {
+          if (sel.bm.get(sx, sy)) work.set(sel.x + sx, sel.y + sy, value);
+        }
+      }
+      commitWork(work, value ? 'Fill selection' : 'Erase selection');
+      return;
+    }
     const work = withSel(baseBitmap!);
     const target = work.get(cell.x, cell.y);
     const value = right || target ? 0 : 1;
@@ -321,7 +379,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     if (!ctx) return;
     const W = gridW * zoom;
     const H = gridH * zoom;
-    const cw = W + RULER;
+    const cw = W + RULER + 2 * PAD;
     const ch = H + RULER;
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
@@ -331,11 +389,11 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     ctx.fillStyle = pal.panel2;
     ctx.fillRect(0, 0, cw, ch);
     ctx.fillStyle = pal.panel;
-    ctx.fillRect(RULER, RULER, W, H);
+    ctx.fillRect(RULER + PAD, RULER, W, H);
 
     // --- grid content (drawn in cell space, origin = top-left of the grid)
     ctx.save();
-    ctx.translate(RULER, RULER);
+    ctx.translate(RULER + PAD, RULER);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(layer, 0, 0, W, H);
 
@@ -383,12 +441,53 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     guide(yFor(0), pal.accent2, 'baseline');
     guide(yFor(doc?.metrics.ascent ?? 0), pal.accent2, 'ascent');
     guide(yFor(doc?.metrics.descent ?? 0), pal.accent2, 'descent');
-    const xOrigin = (-pixel.offsetX / upc) * zoom;
-    const xAdv = ((glyph.advanceWidth - pixel.offsetX) / upc) * zoom;
+    // while a handle is dragged the lines follow the live values (the glyph stays put in the grid)
+    const advNow = liveMetrics?.advance ?? glyph.advanceWidth;
+    const offNow = pixel.offsetX + (liveMetrics ? liveMetrics.lsb - glyph.leftSideBearing : 0);
+    const xOrigin = (-offNow / upc) * zoom;
+    const xAdv = ((advNow - offNow) / upc) * zoom;
+    if (showBearingHandles) {
+      // tint the left / right side bearing spans
+      ctx.fillStyle = alpha(pal.accent2, 0.12);
+      for (const [a, b] of [[xOrigin, 0], [W, xAdv]] as Array<[number, number]>) {
+        const lo = Math.max(-PAD, Math.min(a, b));
+        const hi = Math.min(W + PAD, Math.max(a, b));
+        if (hi > lo) ctx.fillRect(lo, 0, hi - lo, H);
+      }
+    }
+    // symmetry guides
+    const symMode = (glyph.symmetry as SymmetryMode) ?? 'none';
+    if (symMode !== 'none') {
+      ctx.strokeStyle = 'rgba(200, 100, 255, 0.6)';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      if (symMode === 'horizontal' || symMode === 'quad' || symMode === 'radial') {
+        const cx = (gridW / 2) * zoom;
+        ctx.moveTo(cx + 0.5, 0);
+        ctx.lineTo(cx + 0.5, H);
+      }
+      if (symMode === 'vertical' || symMode === 'quad' || symMode === 'radial') {
+        const cy = (gridH / 2) * zoom;
+        ctx.moveTo(0, cy + 0.5);
+        ctx.lineTo(W, cy + 0.5);
+      }
+      if (symMode === 'radial') {
+        // diagonals
+        ctx.moveTo(0, 0);
+        ctx.lineTo(W, H);
+        ctx.moveTo(W, 0);
+        ctx.lineTo(0, H);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     for (const [x, lab] of [[xOrigin, 'origin'], [xAdv, 'advance']] as Array<[number, string]>) {
-      if (x < -20 || x > W + 20) continue;
+      if (x < -PAD || x > W + PAD) continue;
       ctx.strokeStyle = pal.accent2;
-      ctx.setLineDash([2, 4]);
+      ctx.lineWidth = liveMetrics ? 2 : 1;
+      ctx.setLineDash(liveMetrics ? [] : [2, 4]);
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, H);
@@ -396,8 +495,9 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       ctx.setLineDash([]);
       ctx.fillStyle = pal.accent2;
       ctx.font = '10px system-ui';
-      ctx.fillText(lab, Math.max(2, Math.min(W - 40, x + 3)), H - 4);
+      ctx.fillText(lab, Math.max(2 - PAD, Math.min(W + PAD - 40, x + 3)), H - 4);
     }
+    ctx.lineWidth = 1;
 
     // reference overlay (trace another glyph)
     if (ui.overlayGlyphId && doc) {
@@ -464,6 +564,24 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     }
     ctx.restore();
 
+    // --- draggable bearing handles: markers in the top ruler (clamped to the canvas when off-grid)
+    if (showBearingHandles) {
+      for (const [x, label] of [[xOrigin, 'origin'], [xAdv, 'advance']] as Array<[number, string]>) {
+        const clamped = clamp(x, -PAD + 7, W + PAD - 7);
+        const hx = RULER + PAD + clamped;
+        ctx.fillStyle = pal.accent2;
+        ctx.globalAlpha = clamped === x ? 1 : 0.55;
+        ctx.beginPath();
+        ctx.moveTo(hx - 6, RULER - 11);
+        ctx.lineTo(hx + 6, RULER - 11);
+        ctx.lineTo(hx, RULER - 1);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        void label;
+      }
+    }
+
     // --- rulers: exact column numbers (top) and row numbers from the top (left)
     const step = zoom >= 14 ? 1 : zoom >= 8 ? 2 : zoom >= 5 ? 5 : 10;
     const cursorScreenRow = gridH - 1 - cursor.y;
@@ -473,7 +591,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     for (let x = 0; x < gridW; x++) {
       if (!(x % step === 0 || x === cursor.x)) continue;
       ctx.fillStyle = x === cursor.x ? pal.accent : pal.dim;
-      ctx.fillText(String(x), RULER + x * zoom + zoom / 2, RULER / 2);
+      ctx.fillText(String(x), RULER + PAD + x * zoom + zoom / 2, RULER / 2 - 3);
     }
     ctx.textAlign = 'right';
     for (let r = 0; r < gridH; r++) {
@@ -489,7 +607,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     ctx.moveTo(0, RULER + 0.5);
     ctx.lineTo(cw, RULER + 0.5);
     ctx.stroke();
-  }, [layer, display, zoom, gridW, gridH, pixel, sel, stroke, marquee, cursor, hover, kbAnchor, ui.showGrid, tool, ui.overlayGlyphId, doc, glyph, pal]);
+  }, [layer, display, zoom, gridW, gridH, pixel, sel, stroke, marquee, cursor, hover, kbAnchor, ui.showGrid, tool, ui.overlayGlyphId, doc, glyph, pal, liveMetrics, showBearingHandles, slot]);
 
   // mini previews: actual size, enlarged, LED matrix
   useEffect(() => {
@@ -509,6 +627,16 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   // ------------------------------------------------------------ pointer
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!pixel || !baseBitmap || (e.button !== 0 && e.button !== 2)) return;
+    // a marker in the top ruler: drag the origin (LSB) or the advance line
+    const handle = e.button === 0 ? handleAt(e) : null;
+    if (handle) {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      wrapRef.current?.focus();
+      const start: HMetrics = { advance: glyph.advanceWidth, lsb: glyph.leftSideBearing };
+      dragRef.current = { kind: 'metrics', which: handle, startPx: canvasPoint(e).px, start, latest: start };
+      setLiveMetrics({ slot, glyphId: glyph.id, ...start });
+      return;
+    }
     const c = cellAt(e);
     if (!c.inside) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -522,13 +650,14 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       return;
     }
 
+    const symmetry: SymmetryMode = (glyph.symmetry as SymmetryMode) ?? 'none';
     switch (tool) {
       case 'pencil':
       case 'eraser': {
         const value = tool === 'eraser' || right ? 0 : 1;
         const work = withSel(baseBitmap);
         if (sel) setSel(null);
-        work.set(cell.x, cell.y, value);
+        paintWithSymmetry((x,y,v)=>work.set(x,y,v), cell.x, cell.y, gridW, gridH, symmetry, value);
         liveRef.current = work;
         dragRef.current = { kind: 'paint', value, last: cell, label: value ? 'Draw' : 'Erase' };
         bump();
@@ -548,11 +677,40 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
         dragRef.current = { kind: 'marquee', start: cell, cur: cell };
         setMarquee({ x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y });
         break;
+      case 'wand': {
+        const res = wandSelect(baseBitmap, cell.x, cell.y);
+        if (res) {
+          const mode = e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace';
+          const existing = sel ? { x: sel.x, y: sel.y, bm: sel.bm } : null;
+          const merged = mergeWandIntoSelection(existing, res, mode as any, gridW, gridH);
+          if (merged) {
+            const afterB64 = baseBitmap.toB64(); // selection validity check
+            setSel({ bm: merged.bm, x: merged.x, y: merged.y, afterB64 });
+          } else {
+            setSel(null);
+          }
+        }
+        break;
+      }
     }
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!pixel) return;
+    const dm = dragRef.current;
+    if (dm?.kind === 'metrics') {
+      const deltaUnits = ((canvasPoint(e).px - dm.startPx) / zoom) * pixel.unitsPerCell;
+      // LED matrix fonts must stay on whole pixels
+      const opts = { snap: !!led || snapToPixelGrid, step: pixel.unitsPerCell };
+      const next = dm.which === 'advance' ? dragAdvance(dm.start, deltaUnits, opts) : dragOrigin(dm.start, deltaUnits, opts);
+      if (!sameMetrics(next, dm.latest)) {
+        dm.latest = next;
+        setLiveMetrics({ slot, glyphId: glyph.id, ...next });
+      }
+      return;
+    }
+    const overHandle = handleAt(e) !== null;
+    setHandleHover((h) => (h === overHandle ? h : overHandle));
     const c = cellAt(e);
     const next = c.inside ? { x: c.x, y: c.y } : null;
     // only re-render when the hovered cell actually changes
@@ -564,7 +722,31 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       case 'paint': {
         const bm = liveRef.current;
         if (bm && (cell.x !== d.last.x || cell.y !== d.last.y)) {
-          bm.line(d.last.x, d.last.y, cell.x, cell.y, d.value);
+          // draw line with symmetry: for each symmetric point, draw line
+          const sym = (glyph.symmetry as SymmetryMode) ?? 'none';
+          if (sym === 'none') {
+            bm.line(d.last.x, d.last.y, cell.x, cell.y, d.value);
+          } else {
+            // for each symmetric pair, draw line
+            const starts = symmetricPoints(d.last.x, d.last.y, gridW, gridH, sym);
+            const ends = symmetricPoints(cell.x, cell.y, gridW, gridH, sym);
+            const n = Math.min(starts.length, ends.length);
+            if (starts.length === ends.length) {
+              for (let i=0;i<n;i++) bm.line(starts[i].x, starts[i].y, ends[i].x, ends[i].y, d.value);
+            } else {
+              // fallback: draw all mirrored lines
+              for (const sp of starts) {
+                for (const ep of ends) {
+                  // only if they correspond? we draw line from sp to ep if they are close to original pairing
+                }
+              }
+              // simple fallback: draw mirrored lines of the segment
+              bm.line(d.last.x, d.last.y, cell.x, cell.y, d.value);
+              if (sym === 'horizontal' || sym === 'quad' || sym === 'radial') bm.line(gridW-1-d.last.x, d.last.y, gridW-1-cell.x, cell.y, d.value);
+              if (sym === 'vertical' || sym === 'quad' || sym === 'radial') bm.line(d.last.x, gridH-1-d.last.y, cell.x, gridH-1-cell.y, d.value);
+              if (sym === 'quad' || sym === 'radial') bm.line(gridW-1-d.last.x, gridH-1-d.last.y, gridW-1-cell.x, gridH-1-cell.y, d.value);
+            }
+          }
           d.last = cell;
           bump();
         }
@@ -600,6 +782,14 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     dragRef.current = null;
     if (!d || !baseBitmap) return;
     switch (d.kind) {
+      case 'metrics': {
+        setLiveMetrics(null);
+        if (!sameMetrics(d.latest, d.start)) {
+          // one commit = one undo step for the whole drag
+          commit(slot, d.which === 'advance' ? 'Drag advance width' : 'Drag left side bearing', (doc0) => setGlyphMetrics(doc0, glyph.id, d.latest));
+        }
+        break;
+      }
       case 'paint': {
         const bm = liveRef.current;
         liveRef.current = null;
@@ -609,8 +799,34 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       }
       case 'shape': {
         const work = withSel(baseBitmap);
-        if (tool === 'line') work.line(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value);
-        else work.rect(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value, false);
+        const sym = (glyph.symmetry as SymmetryMode) ?? 'none';
+        if (tool === 'line') {
+          if (sym === 'none') work.line(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value);
+          else {
+            const starts = symmetricPoints(d.start.x, d.start.y, gridW, gridH, sym);
+            const ends = symmetricPoints(d.cur.x, d.cur.y, gridW, gridH, sym);
+            if (starts.length === ends.length) {
+              for (let i=0;i<starts.length;i++) work.line(starts[i].x, starts[i].y, ends[i].x, ends[i].y, d.value);
+            } else {
+              work.line(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value);
+              if (sym === 'horizontal' || sym === 'quad' || sym === 'radial') work.line(gridW-1-d.start.x, d.start.y, gridW-1-d.cur.x, d.cur.y, d.value);
+              if (sym === 'vertical' || sym === 'quad' || sym === 'radial') work.line(d.start.x, gridH-1-d.start.y, d.cur.x, gridH-1-d.cur.y, d.value);
+              if (sym === 'quad' || sym === 'radial') work.line(gridW-1-d.start.x, gridH-1-d.start.y, gridW-1-d.cur.x, gridH-1-d.cur.y, d.value);
+            }
+          }
+        } else {
+          // rect with symmetry: draw rect at each symmetric position
+          if (sym === 'none') work.rect(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value, false);
+          else {
+            const pts = symmetricPoints(d.start.x, d.start.y, gridW, gridH, sym);
+            const pts2 = symmetricPoints(d.cur.x, d.cur.y, gridW, gridH, sym);
+            if (pts.length === pts2.length) {
+              for (let i=0;i<pts.length;i++) work.rect(pts[i].x, pts[i].y, pts2[i].x, pts2[i].y, d.value, false);
+            } else {
+              work.rect(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value, false);
+            }
+          }
+        }
         commitWork(work, tool === 'line' ? 'Line' : 'Rectangle');
         setStroke(null);
         break;
@@ -803,6 +1019,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       case 'l': handled(); setTool(slot, 'line'); break;
       case 'r': handled(); setTool(slot, 'rect'); break;
       case 'm': case 's': handled(); setTool(slot, 'select'); break;
+      case 'w': handled(); setTool(slot, 'wand'); break;
       case 'g': handled(); toggleGridLines(slot); break;
       case 'h': handled(); toggleMetricsHud(slot); break;
       case 'i': handled(); transform('Invert', (bm) => bm.invert()); break;
@@ -815,6 +1032,11 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       }
       case 'escape': {
         handled();
+        if (dragRef.current?.kind === 'metrics') {
+          dragRef.current = null;
+          setLiveMetrics(null);
+          break;
+        }
         if (kbAnchor) setKbAnchor(null);
         else if (sel) commitWork(withSel(baseBitmap), 'Place selection');
         setStroke(null);
@@ -888,12 +1110,34 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
 
           <Stack sx={{ alignItems: 'center' }} direction="row" aria-label="View">
             <Action tip="Toggle grid lines (G)" label="Toggle grid lines" active={ui.showGrid} icon={<GridOnIcon fontSize="small" />} onClick={() => toggleGridLines(slot)} />
+            <Action tip="Snap advance / bearing handles to the pixel grid" label="Snap bearings to pixel grid" active={snapToPixelGrid || !!led} icon={<AdjustIcon fontSize="small" />} onClick={toggleSnapToPixelGrid} />
+            <Action tip="Show draggable advance / bearing handles (drag the markers in the top ruler)" label="Bearing handles" active={showBearingHandles} icon={<StraightenIcon fontSize="small" />} onClick={toggleBearingHandles} />
+            <Action tip="Toggle tile preview 3×3" label="Tile preview" active={ui.showTilePreview} icon={<GridOnIcon fontSize="small" />} onClick={() => toggleTilePreview(slot)} />
             <Action tip="Zoom out (-)" label="Zoom out" icon={<ZoomOutIcon fontSize="small" />} onClick={() => zoomBy(-1)} />
             <Typography variant="caption" color="text.secondary" sx={{ minWidth: 64, textAlign: 'center' }}>
               {zoom}px / cell
             </Typography>
             <Action tip="Zoom in (+)" label="Zoom in" icon={<ZoomInIcon fontSize="small" />} onClick={() => zoomBy(1)} />
           </Stack>
+
+          <TextField
+            select
+            label="Symmetry"
+            size="small"
+            value={(glyph.symmetry as string) ?? 'none'}
+            onChange={(e) => {
+              const v = e.target.value as SymmetryMode;
+              commit(slot, `Symmetry ${v}`, (d) => setGlyphSymmetry(d, glyph.id, v));
+            }}
+            sx={{ width: 150 }}
+            title="Mirror drawing: horizontal, vertical, quad or radial. One undo per stroke includes mirrored pixels."
+          >
+            <MenuItem value="none">None</MenuItem>
+            <MenuItem value="horizontal">↔ Horizontal</MenuItem>
+            <MenuItem value="vertical">↕ Vertical</MenuItem>
+            <MenuItem value="quad">⊞ Quad (4-way)</MenuItem>
+            <MenuItem value="radial">✧ Radial</MenuItem>
+          </TextField>
 
           <TextField
             select
@@ -955,9 +1199,9 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
           <Box sx={{ overflow: 'auto', maxWidth: '100%', p: 1, borderRadius: 1, bgcolor: 'background.default', border: 1, borderColor: 'divider' }}>
             <canvas
               ref={canvasRef}
-              width={gridW * zoom + RULER}
+              width={gridW * zoom + RULER + 2 * PAD}
               height={gridH * zoom + RULER}
-              style={{ display: 'block', cursor: 'crosshair', touchAction: 'none', userSelect: 'none', maxWidth: '100%' }}
+              style={{ display: 'block', cursor: handleHover || liveMetrics ? 'ew-resize' : 'crosshair', touchAction: 'none', userSelect: 'none', maxWidth: '100%' }}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
@@ -983,12 +1227,13 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
           <Figure caption="actual size"><canvas ref={actualRef} style={{ display: 'block', imageRendering: 'pixelated' }} /></Figure>
           <Figure caption="enlarged"><canvas ref={bigRef} style={{ display: 'block', imageRendering: 'pixelated' }} /></Figure>
           <Figure caption="LED matrix"><canvas ref={ledRef} style={{ display: 'block' }} /></Figure>
+          <TilePreview slot={slot} />
           <Box>
             {led && (
               <Chip size="small" color="secondary" sx={{ mb: 0.75 }} label={`LED ${ledLabel(led)} · ${led.cellUnits} units/px · spacing ${led.spacing}px`} />
             )}
             <Typography variant="caption" color="text.secondary" component="p" sx={{ m: 0 }}>
-              advance {glyph.advanceWidth} · LSB {glyph.leftSideBearing} · cell {pixel.unitsPerCell}u · baseline row {pixel.baselineRow}
+              advance {liveMetrics?.advance ?? glyph.advanceWidth} · LSB {liveMetrics?.lsb ?? glyph.leftSideBearing} · RSB {computeRSB(liveMetrics?.advance ?? glyph.advanceWidth, liveMetrics?.lsb ?? glyph.leftSideBearing, gridW * pixel.unitsPerCell)} · cell {pixel.unitsPerCell}u · baseline row {pixel.baselineRow}
             </Typography>
           </Box>
         </Stack>

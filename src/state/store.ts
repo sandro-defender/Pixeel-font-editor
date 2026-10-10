@@ -41,6 +41,8 @@ export type ModalState =
   | { type: 'pixelCode'; slot: Slot; glyphId: string }
   | { type: 'glyphDesigner'; slot: Slot; glyphId: string }
   | { type: 'ledMatrix'; slot: Slot }
+  | { type: 'verticalMetrics'; slot: Slot }
+  | { type: 'kerning'; slot: Slot; left?: string; right?: string }
   | { type: 'help' };
 
 /** Copy leaves the source untouched; move also removes the copied glyphs from the source. */
@@ -59,12 +61,14 @@ interface FontSlotUI {
   glyphListFilter: 'all' | 'mapped' | 'unmapped' | 'edited';
   multiSelected: string[];
   zoom: number;
-  tool: 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select';
+  tool: 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select' | 'wand';
   overlayGlyphId: string | null;
   showGrid: boolean;
   cursor: { x: number; y: number } | null;
   selectionRect: { x: number; y: number; w: number; h: number } | null;
   showMetricsHud: boolean;
+  showTilePreview: boolean;
+  seamlessMode: boolean;
 }
 
 /** A pending yes/no question shown by <ConfirmDialog>; resolved by the user. */
@@ -83,6 +87,14 @@ export interface ConfirmOptions {
   confirmLabel?: string;
   cancelLabel?: string;
   danger?: boolean;
+}
+
+/** Transient metrics shown while an advance / bearing handle is being dragged. */
+export interface LiveMetrics {
+  slot: Slot;
+  glyphId: string;
+  advance: number;
+  lsb: number;
 }
 
 export interface AppStore {
@@ -105,6 +117,12 @@ export interface AppStore {
 
   past: Record<Slot, HistoryEntry[]>;
   future: Record<Slot, HistoryEntry[]>;
+
+  /** Snap dragged advance / bearing handles to the pixel (or outline) grid. */
+  snapToPixelGrid: boolean;
+  /** Draw draggable advance / bearing handles in the editors. */
+  showBearingHandles: boolean;
+  liveMetrics: LiveMetrics | null;
 
   // --- core actions
   setActive: (slot: Slot) => void;
@@ -151,6 +169,14 @@ export interface AppStore {
   setSelectionRect: (slot: Slot, rect: { x: number; y: number; w: number; h: number } | null) => void;
   toggleMetricsHud: (slot: Slot) => void;
   setMetricsHud: (slot: Slot, show: boolean) => void;
+  toggleTilePreview: (slot: Slot) => void;
+  setTilePreview: (slot: Slot, show: boolean) => void;
+  setSeamlessMode: (slot: Slot, show: boolean) => void;
+  toggleSnapToPixelGrid: () => void;
+  setSnapToPixelGrid: (on: boolean) => void;
+  toggleBearingHandles: () => void;
+  setBearingHandles: (on: boolean) => void;
+  setLiveMetrics: (m: LiveMetrics | null) => void;
 }
 
 function prefersDark(): boolean {
@@ -173,6 +199,8 @@ const defaultSlotUI = (): FontSlotUI => ({
   cursor: null,
   selectionRect: null,
   showMetricsHud: false,
+  showTilePreview: false,
+  seamlessMode: false,
 });
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -192,6 +220,9 @@ export const useStore = create<AppStore>((set, get) => ({
   lastProjectSavedAt: null,
   past: { A: [], B: [] },
   future: { A: [], B: [] },
+  snapToPixelGrid: true,
+  showBearingHandles: true,
+  liveMetrics: null,
 
   setActive: (slot) => set({ active: slot }),
   setTheme: (theme) => set({ theme }),
@@ -406,6 +437,17 @@ export const useStore = create<AppStore>((set, get) => ({
     set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showMetricsHud: !s.ui[slot].showMetricsHud } } })),
   setMetricsHud: (slot, show) =>
     set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showMetricsHud: show } } })),
+  toggleTilePreview: (slot) =>
+    set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showTilePreview: !s.ui[slot].showTilePreview } } })),
+  setTilePreview: (slot, show) =>
+    set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showTilePreview: show } } })),
+  setSeamlessMode: (slot, show) =>
+    set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], seamlessMode: show } } })),
+  toggleSnapToPixelGrid: () => set((s) => ({ snapToPixelGrid: !s.snapToPixelGrid })),
+  setSnapToPixelGrid: (on) => set({ snapToPixelGrid: on }),
+  toggleBearingHandles: () => set((s) => ({ showBearingHandles: !s.showBearingHandles })),
+  setBearingHandles: (on) => set({ showBearingHandles: on }),
+  setLiveMetrics: (m) => set({ liveMetrics: m }),
 }));
 
 // ---------------------------------------------------------------------------

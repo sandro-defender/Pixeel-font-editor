@@ -40,6 +40,8 @@ export interface PixelData {
 
 export type GlyphKind = 'pixel' | 'vector' | 'compound' | 'empty';
 
+export type SymmetryMode = 'none' | 'horizontal' | 'vertical' | 'quad' | 'radial';
+
 export interface GlyphDoc {
   id: string;
   name: string;
@@ -61,6 +63,15 @@ export interface GlyphDoc {
   edited: boolean;
   /** Original glyph index in the imported font (for preservation/reporting). */
   srcIndex: number | null;
+  /** Symmetry mode for pixel editing, persisted per glyph. */
+  symmetry?: SymmetryMode;
+}
+
+/** A kerning pair (by glyph id): `value` font units are added after the left glyph. */
+export interface KerningPair {
+  left: string;
+  right: string;
+  value: number;
 }
 
 export interface FontMetrics {
@@ -68,6 +79,19 @@ export interface FontMetrics {
   ascent: number;
   descent: number; // negative
   lineGap: number;
+  /**
+   * OS/2 vertical metrics. Optional: when absent they follow ascent / descent /
+   * lineGap (win values = ascent and −descent). Imported fonts keep their own.
+   */
+  typoAscender?: number;
+  typoDescender?: number; // usually negative
+  typoLineGap?: number;
+  /** usWinAscent: positive distance above the baseline (clipping limit on Windows). */
+  winAscent?: number;
+  /** usWinDescent: positive distance below the baseline. */
+  winDescent?: number;
+  /** OS/2 fsSelection bit 7: apps should use the typo metrics instead of hhea / win. */
+  useTypoMetrics?: boolean;
 }
 
 export interface FontMeta {
@@ -140,6 +164,17 @@ export interface FontDoc {
    * outlines have been replaced by pixels.
    */
   ledSource?: { span: number; ascent: number; descent: number } | null;
+  /**
+   * Editable kerning pairs, read from the source font's kern / GPOS tables on
+   * import. Undefined when the font has none that could be read.
+   */
+  kerning?: KerningPair[];
+  /**
+   * True once the pairs were changed in Pixeel (or glyph indices shifted):
+   * export then writes a fresh `kern` table from `kerning` instead of passing
+   * the source font's kern / GPOS tables through.
+   */
+  kerningEdited?: boolean;
 }
 
 export interface WorkspaceSettings {

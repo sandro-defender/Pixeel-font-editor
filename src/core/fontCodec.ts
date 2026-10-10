@@ -25,6 +25,8 @@ import { tracePixelData } from './trace';
 import { transformContours, contourBounds } from './contours';
 import { b64ToBytes } from './bitmap';
 import { checkLedFont, ledLabel } from './ledMatrix';
+import { effectiveVertical } from './verticalMetrics';
+import { buildKernTable, effectivePairs, kerningFromTtf, kerningOf, kerningToIndexPairs, parseKernTable } from './kerning';
 
 export interface TtfLike {
   head: Record<string, unknown> & { unitsPerEm: number };
@@ -173,6 +175,8 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
 
   const head = ttf.head ?? ({} as any);
   const hhea = ttf.hhea ?? ({} as any);
+  const os2 = (ttf['OS/2'] ?? null) as Record<string, unknown> | null;
+  const os2Num = (k: string): number | undefined => (os2 && Number.isFinite(Number(os2[k])) && os2[k] !== undefined ? Math.round(Number(os2[k])) : undefined);
   const doc: FontDoc = {
     fontId: makeId('f'),
     meta: deriveMetaFields(meta),
@@ -181,6 +185,16 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
       ascent: Math.round(Number(hhea.ascent ?? 800)),
       descent: Math.round(Number(hhea.descent ?? -200)),
       lineGap: Math.round(Number(hhea.lineGap ?? 0)),
+      ...(os2
+        ? {
+            typoAscender: os2Num('sTypoAscender'),
+            typoDescender: os2Num('sTypoDescender'),
+            typoLineGap: os2Num('sTypoLineGap'),
+            winAscent: os2Num('usWinAscent'),
+            winDescent: os2Num('usWinDescent'),
+            useTypoMetrics: (Number(os2.fsSelection ?? 0) & 0x80) !== 0,
+          }
+        : {}),
     },
     glyphs,
     source: {
@@ -195,6 +209,12 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
     },
     sourceRef: null, // assigned by the store when registering sourceTtf
   };
+
+  const kern = kerningFromTtf(ttf as { kern?: ArrayLike<number>; GPOS?: ArrayLike<number> }, glyphs);
+  if (kern) {
+    doc.kerning = kern.pairs;
+    warnings.push(...kern.warnings);
+  }
 
   const dropTargets = tables.filter((t) => !CORE_WRITABLE.has(t) && !HINTING_TABLES.has(t) && !KERNING_TABLES.has(t) && !ALWAYS_IGNORED.has(t));
   if (dropTargets.length) {
@@ -324,6 +344,16 @@ function emptyTtfObject(): TtfLike {
   return (Font.create() as unknown as FontInstance).data as unknown as TtfLike;
 }
 
+/**
+ * The source font's glyph-indexed tables (kern, GPOS) are only valid while every
+ * glyph still sits at its original index: nothing deleted or inserted before the
+ * end of the list.
+ */
+export function glyphOrderPreserved(doc: FontDoc): boolean {
+  const original = doc.source?.numGlyphs ?? 0;
+  return doc.glyphs.every((g, i) => (g.srcIndex === null ? i >= original : g.srcIndex === i));
+}
+
 /** Resolve the export contours for a glyph. */
 export function resolveGlyphContours(glyph: GlyphDoc, all: GlyphDoc[]): Contour[] {
   if (glyph.kind === 'pixel' && glyph.pixel) return tracePixelData(glyph.pixel);
@@ -385,18 +415,53 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
     notes.push('Kerning tables (kern/GPOS/kerx) were not preserved (option off).');
   }
 
+  // --- kerning
+  // Unedited kerning passes through as the source font's own tables (valid while
+  // glyph indices are unchanged). Edited kerning — or a changed glyph order —
+  // is rewritten as a classic `kern` table from the editor's pair list.
+  let kerningRewritten = false;
+  let replacedGpos = false;
+  if (!options.preserveKerning) {
+    for (const t of ['GPOS', 'kern', 'kerx']) delete (base as Record<string, unknown>)[t];
+  } else if (doc.kerning !== undefined) {
+    if (doc.kerningEdited || !glyphOrderPreserved(doc)) {
+      kerningRewritten = true;
+      const b = base as Record<string, unknown>;
+      const gpos = b.GPOS as ArrayLike<number> | undefined;
+      replacedGpos = !!gpos && gpos.length > 0;
+      delete b.GPOS;
+      delete b.kern;
+      delete b.kerx;
+      const table = buildKernTable(kerningToIndexPairs(doc));
+      if (table.length) b.kern = table;
+      const n = effectivePairs(kerningOf(doc)).length;
+      notes.push(
+        `Kerning was written as a classic kern table (${n} pair${n === 1 ? '' : 's'})` +
+          (replacedGpos ? '; the original GPOS table was replaced, so any other GPOS features (mark or ligature positioning) were not kept.' : '.'),
+      );
+    }
+  } else if (doc.source?.hasKerning && !glyphOrderPreserved(doc)) {
+    notes.push('Glyphs were removed or inserted, so the original kerning tables (which refer to glyph numbers) may no longer match.');
+  }
+
   base.glyf = newGlyf;
   base.head = { ...(base.head as object), unitsPerEm: doc.metrics.unitsPerEm, indexToLocFormat: 0 } as any;
   base.hhea = { ...(base.hhea as object), ascent: doc.metrics.ascent, descent: doc.metrics.descent, lineGap: doc.metrics.lineGap } as any;
   const os2 = base['OS/2'];
   if (os2) {
+    // typo / win values: the editor's own when set (imported fonts keep theirs), else they follow hhea
+    const v = effectiveVertical(doc.metrics);
     Object.assign(os2, {
-      sTypoAscender: doc.metrics.ascent,
-      sTypoDescender: doc.metrics.descent,
-      sTypoLineGap: doc.metrics.lineGap,
-      usWinAscent: Math.max(doc.metrics.ascent, 0),
-      usWinDescent: Math.max(-doc.metrics.descent, 0),
+      sTypoAscender: v.typoAscender,
+      sTypoDescender: v.typoDescender,
+      sTypoLineGap: v.typoLineGap,
+      usWinAscent: v.winAscent,
+      usWinDescent: v.winDescent,
     });
+    if (doc.metrics.useTypoMetrics !== undefined) {
+      const sel = Number(os2.fsSelection ?? 0);
+      os2.fsSelection = doc.metrics.useTypoMetrics ? sel | 0x80 : sel & ~0x80;
+    }
   }
 
   // Name table: overlay editable fields; unknown/imported extra records survive.
@@ -430,9 +495,12 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   const preserved = srcTables.filter((t) =>
     CORE_WRITABLE.has(t) ||
     (HINTING_TABLES.has(t) && options.preserveHinting) ||
-    (KERNING_TABLES.has(t) && options.preserveKerning),
+    (KERNING_TABLES.has(t) && options.preserveKerning && !kerningRewritten),
   );
-  const dropped = classifyDroppedTables(srcTables, options.preserveHinting, options.preserveKerning);
+  // a rewritten kerning replaces the source's GPOS / kerx tables (a `kern` table is written in their place)
+  const dropped = classifyDroppedTables(srcTables, options.preserveHinting, options.preserveKerning).concat(
+    kerningRewritten ? srcTables.filter((t) => KERNING_TABLES.has(t) && t !== 'kern') : [],
+  );
 
   const report: ExportReport = {
     bytes: buffer.byteLength,
@@ -446,17 +514,17 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   };
 
   if (options.validate) {
-    report.validation = validateExport(buffer, doc);
+    report.validation = validateExport(buffer, doc, kerningRewritten ? effectivePairs(kerningOf(doc)).length : undefined);
   }
   return { buffer, report };
 }
 
 /** Re-parse an exported font and verify representative properties. */
-export function validateExport(buffer: ArrayBuffer, doc: FontDoc): ValidationResult {
+export function validateExport(buffer: ArrayBuffer, doc: FontDoc, expectedKernPairs?: number): ValidationResult {
   const checks: ValidationCheck[] = [];
   const push = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
   try {
-    const font = Font.create(buffer, { type: 'ttf' }) as unknown as FontInstance;
+    const font = Font.create(buffer, { type: 'ttf', kerning: expectedKernPairs !== undefined }) as unknown as FontInstance;
     const ttf = font.data as unknown as TtfLike;
     push('Parse', true, `Re-parsed exported file (${buffer.byteLength} bytes).`);
     push('Glyph count', ttf.glyf.length === doc.glyphs.length, `expected ${doc.glyphs.length}, got ${ttf.glyf.length}`);
@@ -473,6 +541,11 @@ export function validateExport(buffer: ArrayBuffer, doc: FontDoc): ValidationRes
       if (!rg || Math.round(rg.advanceWidth ?? -1) !== Math.round(g.advanceWidth)) bad += 1;
     }
     push('cmap + metrics sample', bad === 0, `${sample.length - bad}/${sample.length} mapped glyphs verified (unicode → glyph index, advance width).`);
+    if (expectedKernPairs !== undefined) {
+      const kern = ttf.kern as ArrayLike<number> | undefined;
+      const got = kern && kern.length ? parseKernTable(kern).pairs.length : 0;
+      push('Kerning pairs', got === expectedKernPairs, `${got} of ${expectedKernPairs} kerning pair(s) found in the exported kern table.`);
+    }
     const family = (ttf.name as any)?.fontFamily;
     push('Name table', family === doc.meta.fontFamily, `family "${family}" vs "${doc.meta.fontFamily}"`);
     const notdef = ttf.glyf[0];
