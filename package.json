@@ -5,8 +5,12 @@
   "description": "Browser-based pixel/TTF font editor: import, edit and export TrueType fonts entirely client-side.",
   "type": "module",
   "scripts": {
+    "fonts:catalog": "node scripts/generate-reference-font-catalog.mjs",
+    "predev": "npm run fonts:catalog",
     "dev": "vite",
+    "prebuild": "npm run fonts:catalog",
     "build": "tsc -b && vite build",
+    "prebuild:pages": "npm run fonts:catalog",
     "build:pages": "VITE_BUILD_PAGES=1 vite build",
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run",

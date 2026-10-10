@@ -36,6 +36,7 @@ import ZoomInIcon from '@mui/icons-material/ZoomIn';
 import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import KeyboardIcon from '@mui/icons-material/Keyboard';
 import AspectRatioIcon from '@mui/icons-material/AspectRatio';
+import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import { useStore } from '../state/store';
 import type { GlyphDoc, Slot } from '../core/types';
 import { Bitmap, clampPasteOffset } from '../core/bitmap';
@@ -904,6 +905,13 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
               Snap to LED grid
             </Button>
           )}
+          <Button
+            title="Choose a character from a local reference font, adjust it, and place it in this pixel grid"
+            startIcon={<AutoFixHighIcon />}
+            onClick={() => openModal({ type: 'glyphDesigner', slot, glyphId: glyph.id })}
+          >
+            Glyph designer…
+          </Button>
           <Button
             title="Enter the exact pixels as text art (#/.) or as LED column bytes (0x3E, …)"
             startIcon={<KeyboardIcon />}

@@ -14,8 +14,9 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | --- | --- |
 | Workspaces | Two independent fonts (Font A / Font B), side-by-side comparison, per-font export |
 | Import | `.ttf` via file picker or drag & drop (`.otf`/CFF is converted to quadratic curves); **pixel fonts are detected** — the importer finds the cell size at which every outline lands on the lattice and offers a lossless conversion |
-| Glyph browser | Searchable grid with previews, Unicode values and names; create / duplicate / delete; re-assign Unicode with conflict validation; `.notdef` is always preserved; unmapped glyphs are visually distinct |
-| Pixel editor | 8×8, 16×16, 32×32 or custom grids (≤128); pencil, eraser, fill, line, rectangle, selection; copy/cut/paste/move; shift, flip, rotate, invert, clear; undo/redo; zoom with grid lines; **keyboard cursor** (arrows move it, Space paints, Shift+Space erases, T toggles); **hover coordinate readout** and **index rulers**; **right-drag erases**; reference overlay for tracing; touch/pointer drawing; live actual-size + enlarged previews; baseline/ascent/descent/origin/advance guides; explicit crop/pad vs resample when resizing a grid; text-art and LED column-byte entry (*Pixel code…*) |
+| Glyph browser | Searchable grid with previews, Unicode values and names; create / duplicate / delete; re-assign Unicode with conflict validation; `.notdef` is always preserved; unmapped glyphs are visually distinct; add the 33 modern Mkhedruli starter glyphs or all 172 assigned Georgian letters across Mkhedruli, Mtavruli, Asomtavruli and Nuskhuri |
+| Pixel editor | 8×8, 16×16, 32×32 or custom grids (≤128); pencil, eraser, fill, line, rectangle, selection; copy/cut/paste/move; shift, flip, rotate, invert, clear; undo/redo; zoom with grid lines; **keyboard cursor** (arrows move it, Space paints, Shift+Space erases, T toggles); **hover coordinate readout** and **index rulers**; **right-drag erases**; reference overlay for tracing; touch/pointer drawing; live actual-size + enlarged previews; baseline/ascent/descent/origin/advance guides; explicit crop/pad vs resample when resizing a grid; text-art and LED column-byte entry (*Pixel code…*); **local glyph designer** with reference fonts, Georgian character sets, and width/height/weight/slant/position controls |
+| Reference fonts | Drop TTF/OTF examples into `public/fonts/` and index them with `npm run fonts:catalog` (production builds index automatically), or load a font file directly in the glyph designer; sample any supported letter/number and place the styled bitmap into the selected pixel glyph. Everything stays in the browser. |
 | LED matrix fonts | Optional exact-pixel mode per font: fixed grid height, one integer unit size per lit pixel, glyph origins on whole-pixel boundaries, advance = (width + spacing) × pixel size; an LED dot preview; *Snap to LED grid* for vector glyphs; export checks that verify every glyph (errors for off-grid data, warnings for advances) |
 | Outline editor | Imported vector glyphs keep their original outlines; select contours & points, move points, reverse or delete contours; edit advance width and side bearings; composite glyphs detected and preserved (or explicitly flattened); **convert to pixels** for one glyph or the whole font, on one shared grid (see [Converting a font to pixels](#converting-a-font-to-pixels)); revert to the original outline |
 | Transfer A↔B | **Copy** or **Move** one or many glyphs either direction (Move removes them from the source after copying; `.notdef` is never removed; skipped glyphs stay put); drag glyph cards onto the A/B tabs; preserve source metrics or adapt; optional proportional scaling by units-per-em; baseline-aligned preview; collision handling (replace / skip / reassign); confirmation step; one undo step reverts both fonts for a move |
@@ -79,6 +80,27 @@ Notes:
   `.notdef` excluded). Trimming that list is the main lever on firmware size.
 - Quotes and backslashes in the glyph set are escaped, so the YAML always parses.
 - `LICENSE.txt` is included — respect the font's license when you redistribute.
+
+## Using the local glyph designer
+
+Open a pixel glyph and choose **Glyph designer…** from the pixel toolbar. Pick a
+reference font and a source character, try the width, height, stroke-weight,
+slant and vertical-position sliders, then choose **Place in pixel window**. The
+result replaces the selected glyph's pixels as one undoable edit, so you can
+continue refining it directly on the canvas.
+
+The designer includes a system-font fallback and an **Add font file…** picker
+for a one-session TTF/OTF reference. To keep your own reference fonts in the
+project, copy them into `public/fonts/` (subfolders work), run
+`npm run fonts:catalog`, then refresh Pixeel. Normal production builds scan and
+index that folder automatically. See [`public/fonts/README.md`](public/fonts/README.md).
+Catalog fonts are served from the same site as the app; uploaded reference files
+are read from your device. No font or glyph is sent to an AI service or remote API.
+
+Georgian names/search cover Mkhedruli, Mtavruli, Asomtavruli and Nuskhuri. The
+**ქ+** action in the glyph browser adds all assigned Georgian letter code
+points; **Aa+** stays a smaller starter set with the modern 33-letter Mkhedruli
+alphabet.
 
 ## Converting a font to pixels
 

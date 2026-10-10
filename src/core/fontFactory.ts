@@ -4,7 +4,7 @@ import { EMPTY_META, deriveMetaFields, makePostScriptName } from './metadata';
 import { emptyGlyphDoc } from './fontCodec';
 import type { FontDoc, GlyphDoc, NewFontOptions, PixelData } from './types';
 import { makeId } from './types';
-import { suggestGlyphName, QUICK_RANGES } from './unicodeNames';
+import { suggestGlyphName, QUICK_RANGES, GEORGIAN_LETTER_POINTS } from './unicodeNames';
 import { ledAdvance, ledLayout, ledMetrics, normalizeLedSpec, spaceWidthFor } from './ledMatrix';
 
 export const DEFAULT_CELL_TARGET = 1024; // aim for 1024 unitsPerEm
@@ -145,30 +145,36 @@ export function makePixelGlyph(
   };
 }
 
-/** Add a starter set (basic Latin + digits + punctuation) as empty pixel glyphs. */
-export function basicSetGlyphs(doc: FontDoc): GlyphDoc[] {
+/** Create empty pixel glyphs for arbitrary, non-duplicated Unicode code points. */
+export function glyphSetForCodePoints(doc: FontDoc, codePoints: number[]): GlyphDoc[] {
   const existing = new Set(doc.glyphs.map((g) => g.unicode).filter((u): u is number => u !== null));
-  const layout = {
-    unitsPerCell: doc.metrics.unitsPerEm / 16,
-    baselineRow: 3,
-    defaultAdvance: 0,
-  };
   const template = doc.glyphs.find((g) => g.pixel)?.pixel;
   const width = template?.width ?? 8;
   const height = template?.height ?? 8;
-  layout.unitsPerCell = template?.unitsPerCell ?? doc.metrics.unitsPerEm / height;
-  layout.baselineRow = template?.baselineRow ?? 2;
-  layout.defaultAdvance = doc.ledMatrix ? ledAdvance(doc.ledMatrix, width) : width * layout.unitsPerCell;
-
-  const points = QUICK_RANGES.flatMap((r) => r.points).filter((cp) => !existing.has(cp));
+  const unitsPerCell = template?.unitsPerCell ?? doc.metrics.unitsPerEm / height;
+  const layout = {
+    unitsPerCell,
+    baselineRow: template?.baselineRow ?? 2,
+    defaultAdvance: doc.ledMatrix ? ledAdvance(doc.ledMatrix, width) : width * unitsPerCell,
+  };
   const seen = new Set<number>();
   const out: GlyphDoc[] = [];
-  for (const cp of points) {
-    if (seen.has(cp)) continue;
+  for (const cp of codePoints) {
+    if (existing.has(cp) || seen.has(cp)) continue;
     seen.add(cp);
     out.push(makePixelGlyph(cp, width, height, layout, cp === 0x20));
   }
   return out;
+}
+
+/** Add the standard Latin, digit, punctuation and modern Mkhedruli starter set. */
+export function basicSetGlyphs(doc: FontDoc): GlyphDoc[] {
+  return glyphSetForCodePoints(doc, QUICK_RANGES.flatMap((r) => r.points));
+}
+
+/** Add every assigned Georgian letter from Mkhedruli, Mtavruli, Asomtavruli and Nuskhuri. */
+export function georgianSetGlyphs(doc: FontDoc): GlyphDoc[] {
+  return glyphSetForCodePoints(doc, GEORGIAN_LETTER_POINTS);
 }
 
 /** Resize helper used by the grid-resize dialog (explicit crop/pad vs resample). */

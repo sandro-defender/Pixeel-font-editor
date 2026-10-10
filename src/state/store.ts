@@ -39,6 +39,7 @@ export type ModalState =
   | { type: 'rasterize'; slot: Slot; glyphId?: string; scope?: 'glyph' | 'font' }
   | { type: 'addGlyph'; slot: Slot }
   | { type: 'pixelCode'; slot: Slot; glyphId: string }
+  | { type: 'glyphDesigner'; slot: Slot; glyphId: string }
   | { type: 'ledMatrix'; slot: Slot }
   | { type: 'help' };
 

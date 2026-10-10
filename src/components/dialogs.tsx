@@ -55,6 +55,7 @@ import { detectFontPixelGrid, gridForRows, pixelizeFont, placeOnGrid, type Pixel
 import { Bitmap, MAX_GRID } from '../core/bitmap';
 import { ledDotSize, paintBitmap, paintLedDots, toRgba } from '../render/bitmapCanvas';
 import { AppDialog, Hint, SegmentedControl, Section } from './ui';
+import { GlyphDesignerDialog } from './GlyphDesigner';
 
 /** Numeric field that keeps a number (NaN when empty) and reports it. */
 function NumberField(props: {
@@ -1783,6 +1784,13 @@ export function HelpDialog() {
           <li>Vector glyphs are rasterized (snapped) to the grid.</li>
         </ul>
       </Section>
+      <Section title="Glyph designer and Georgian letters">
+        <ul style={{ margin: 0, paddingLeft: 18 }}>
+          <li>Open a pixel glyph and choose <em>Glyph designer…</em> to sample a character from a local reference font. Width, height, stroke weight, slant and vertical position are adjustable before the bitmap is placed into the selected glyph.</li>
+          <li>Put reference TTF/OTF files in <code>public/fonts/</code> and list them in <code>public/fonts/catalog.json</code>, or load a file directly for the current session. Catalog references stay same-origin and are never uploaded.</li>
+          <li>Georgian support includes the assigned Mkhedruli, Mtavruli, Asomtavruli and Nuskhuri letter code points. <em>Aa+</em> adds the modern 33-letter Mkhedruli starter set; <em>ქ+</em> adds the full Georgian letter set.</li>
+        </ul>
+      </Section>
       <Section title="Transfer between fonts A and B">
         <ul style={{ margin: 0, paddingLeft: 18 }}>
           <li>
@@ -1833,6 +1841,8 @@ export function ModalHost() {
       return <AddGlyphDialog slot={modal.slot} />;
     case 'pixelCode':
       return <PixelCodeDialog slot={modal.slot} glyphId={modal.glyphId} />;
+    case 'glyphDesigner':
+      return <GlyphDesignerDialog key={`${modal.slot}:${modal.glyphId}`} slot={modal.slot} glyphId={modal.glyphId} />;
     case 'ledMatrix':
       return <LedMatrixDialog slot={modal.slot} />;
     case 'help':
