@@ -19,6 +19,7 @@ import FormatColorFillIcon from '@mui/icons-material/FormatColorFill';
 import HorizontalRuleIcon from '@mui/icons-material/HorizontalRule';
 import CropSquareIcon from '@mui/icons-material/CropSquare';
 import HighlightAltIcon from '@mui/icons-material/HighlightAlt';
+import ColorizeIcon from '@mui/icons-material/Colorize';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import ContentCutIcon from '@mui/icons-material/ContentCut';
 import ContentPasteIcon from '@mui/icons-material/ContentPaste';
@@ -40,7 +41,10 @@ import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
 import { useStore } from '../state/store';
 import type { GlyphDoc, Slot } from '../core/types';
 import { Bitmap, clampPasteOffset } from '../core/bitmap';
-import { setPixelData, snapGlyphToLed } from '../state/glyphActions';
+import { wandSelect, mergeWandIntoSelection, fillWithSelection } from '../core/wand';
+import { TilePreview } from './TilePreview';
+import { symmetricPoints, paintWithSymmetry, type SymmetryMode } from '../core/symmetry';
+import { setPixelData, snapGlyphToLed, setGlyphSymmetry } from '../state/glyphActions';
 import { tracePixelData } from '../core/trace';
 import { contoursToPath2D } from '../render/glyphRender';
 import { checkLedFont, glyphLedIssues, ledLabel } from '../core/ledMatrix';
@@ -52,7 +56,7 @@ let appClipboard: Bitmap | null = null;
 /** Pixels reserved for the rulers along the top and left edges. */
 const RULER = 22;
 
-type Tool = 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select';
+type Tool = 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select' | 'wand';
 
 interface Cell {
   /** column, 0 = left */
@@ -119,10 +123,11 @@ function usePalette(): Pal {
 const TOOLS: Array<{ tool: Tool; label: string; tip: string; icon: React.ReactNode }> = [
   { tool: 'pencil', label: 'Pencil', tip: 'Pencil — draw pixels (B). Right-drag erases.', icon: <EditIcon fontSize="small" /> },
   { tool: 'eraser', label: 'Eraser', tip: 'Eraser — remove pixels (E)', icon: <FormatClearIcon fontSize="small" /> },
-  { tool: 'fill', label: 'Flood fill', tip: 'Flood fill (F)', icon: <FormatColorFillIcon fontSize="small" /> },
+  { tool: 'fill', label: 'Flood fill', tip: 'Flood fill (F) — respects selection if active', icon: <FormatColorFillIcon fontSize="small" /> },
   { tool: 'line', label: 'Line', tip: 'Line tool (L)', icon: <HorizontalRuleIcon fontSize="small" /> },
   { tool: 'rect', label: 'Rectangle', tip: 'Rectangle tool (R)', icon: <CropSquareIcon fontSize="small" /> },
   { tool: 'select', label: 'Select and move', tip: 'Select / move pixels (M). Ctrl+A selects all. The selection stays inside the grid — no pixels are lost.', icon: <HighlightAltIcon fontSize="small" /> },
+  { tool: 'wand', label: 'Magic wand', tip: 'Magic wand — select contiguous similar pixels (W). Shift+click adds, Alt+click subtracts.', icon: <ColorizeIcon fontSize="small" /> },
 ];
 
 /** Icon button with a tooltip; wrapped in a span so disabled buttons still show their tip. */
@@ -147,6 +152,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const setZoom = useStore((s) => s.setZoom);
   const setOverlayGlyph = useStore((s) => s.setOverlayGlyph);
   const toggleGridLines = useStore((s) => s.toggleGridLines);
+  const toggleTilePreview = useStore((s) => s.toggleTilePreview);
   const setStoreCursor = useStore((s) => s.setCursor);
   const setStoreSelectionRect = useStore((s) => s.setSelectionRect);
   const toggleMetricsHud = useStore((s) => s.toggleMetricsHud);
@@ -284,8 +290,21 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     return { x, y, inside };
   };
 
-  /** Fill / flood region at a cell. Left: toggles the region; right: clears it. */
+  /** Fill / flood region at a cell. Left: toggles the region; right: clears it. Respects selection if active. */
   const floodAt = (cell: Cell, right: boolean) => {
+    if (!baseBitmap) return;
+    // If selection active, fill the selection area
+    if (sel) {
+      const value = right ? 0 : 1;
+      const work = withSel(baseBitmap);
+      for (let sy = 0; sy < sel.bm.height; sy++) {
+        for (let sx = 0; sx < sel.bm.width; sx++) {
+          if (sel.bm.get(sx, sy)) work.set(sel.x + sx, sel.y + sy, value);
+        }
+      }
+      commitWork(work, value ? 'Fill selection' : 'Erase selection');
+      return;
+    }
     const work = withSel(baseBitmap!);
     const target = work.get(cell.x, cell.y);
     const value = right || target ? 0 : 1;
@@ -385,6 +404,34 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     guide(yFor(doc?.metrics.descent ?? 0), pal.accent2, 'descent');
     const xOrigin = (-pixel.offsetX / upc) * zoom;
     const xAdv = ((glyph.advanceWidth - pixel.offsetX) / upc) * zoom;
+    // symmetry guides
+    const symMode = (glyph.symmetry as SymmetryMode) ?? 'none';
+    if (symMode !== 'none') {
+      ctx.strokeStyle = 'rgba(200, 100, 255, 0.6)';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      if (symMode === 'horizontal' || symMode === 'quad' || symMode === 'radial') {
+        const cx = (gridW / 2) * zoom;
+        ctx.moveTo(cx + 0.5, 0);
+        ctx.lineTo(cx + 0.5, H);
+      }
+      if (symMode === 'vertical' || symMode === 'quad' || symMode === 'radial') {
+        const cy = (gridH / 2) * zoom;
+        ctx.moveTo(0, cy + 0.5);
+        ctx.lineTo(W, cy + 0.5);
+      }
+      if (symMode === 'radial') {
+        // diagonals
+        ctx.moveTo(0, 0);
+        ctx.lineTo(W, H);
+        ctx.moveTo(W, 0);
+        ctx.lineTo(0, H);
+      }
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
     for (const [x, lab] of [[xOrigin, 'origin'], [xAdv, 'advance']] as Array<[number, string]>) {
       if (x < -20 || x > W + 20) continue;
       ctx.strokeStyle = pal.accent2;
@@ -522,13 +569,14 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       return;
     }
 
+    const symmetry: SymmetryMode = (glyph.symmetry as SymmetryMode) ?? 'none';
     switch (tool) {
       case 'pencil':
       case 'eraser': {
         const value = tool === 'eraser' || right ? 0 : 1;
         const work = withSel(baseBitmap);
         if (sel) setSel(null);
-        work.set(cell.x, cell.y, value);
+        paintWithSymmetry((x,y,v)=>work.set(x,y,v), cell.x, cell.y, gridW, gridH, symmetry, value);
         liveRef.current = work;
         dragRef.current = { kind: 'paint', value, last: cell, label: value ? 'Draw' : 'Erase' };
         bump();
@@ -548,6 +596,21 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
         dragRef.current = { kind: 'marquee', start: cell, cur: cell };
         setMarquee({ x0: cell.x, y0: cell.y, x1: cell.x, y1: cell.y });
         break;
+      case 'wand': {
+        const res = wandSelect(baseBitmap, cell.x, cell.y);
+        if (res) {
+          const mode = e.shiftKey ? 'add' : e.altKey ? 'subtract' : 'replace';
+          const existing = sel ? { x: sel.x, y: sel.y, bm: sel.bm } : null;
+          const merged = mergeWandIntoSelection(existing, res, mode as any, gridW, gridH);
+          if (merged) {
+            const afterB64 = baseBitmap.toB64(); // selection validity check
+            setSel({ bm: merged.bm, x: merged.x, y: merged.y, afterB64 });
+          } else {
+            setSel(null);
+          }
+        }
+        break;
+      }
     }
   };
 
@@ -564,7 +627,31 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       case 'paint': {
         const bm = liveRef.current;
         if (bm && (cell.x !== d.last.x || cell.y !== d.last.y)) {
-          bm.line(d.last.x, d.last.y, cell.x, cell.y, d.value);
+          // draw line with symmetry: for each symmetric point, draw line
+          const sym = (glyph.symmetry as SymmetryMode) ?? 'none';
+          if (sym === 'none') {
+            bm.line(d.last.x, d.last.y, cell.x, cell.y, d.value);
+          } else {
+            // for each symmetric pair, draw line
+            const starts = symmetricPoints(d.last.x, d.last.y, gridW, gridH, sym);
+            const ends = symmetricPoints(cell.x, cell.y, gridW, gridH, sym);
+            const n = Math.min(starts.length, ends.length);
+            if (starts.length === ends.length) {
+              for (let i=0;i<n;i++) bm.line(starts[i].x, starts[i].y, ends[i].x, ends[i].y, d.value);
+            } else {
+              // fallback: draw all mirrored lines
+              for (const sp of starts) {
+                for (const ep of ends) {
+                  // only if they correspond? we draw line from sp to ep if they are close to original pairing
+                }
+              }
+              // simple fallback: draw mirrored lines of the segment
+              bm.line(d.last.x, d.last.y, cell.x, cell.y, d.value);
+              if (sym === 'horizontal' || sym === 'quad' || sym === 'radial') bm.line(gridW-1-d.last.x, d.last.y, gridW-1-cell.x, cell.y, d.value);
+              if (sym === 'vertical' || sym === 'quad' || sym === 'radial') bm.line(d.last.x, gridH-1-d.last.y, cell.x, gridH-1-cell.y, d.value);
+              if (sym === 'quad' || sym === 'radial') bm.line(gridW-1-d.last.x, gridH-1-d.last.y, gridW-1-cell.x, gridH-1-cell.y, d.value);
+            }
+          }
           d.last = cell;
           bump();
         }
@@ -609,8 +696,34 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       }
       case 'shape': {
         const work = withSel(baseBitmap);
-        if (tool === 'line') work.line(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value);
-        else work.rect(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value, false);
+        const sym = (glyph.symmetry as SymmetryMode) ?? 'none';
+        if (tool === 'line') {
+          if (sym === 'none') work.line(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value);
+          else {
+            const starts = symmetricPoints(d.start.x, d.start.y, gridW, gridH, sym);
+            const ends = symmetricPoints(d.cur.x, d.cur.y, gridW, gridH, sym);
+            if (starts.length === ends.length) {
+              for (let i=0;i<starts.length;i++) work.line(starts[i].x, starts[i].y, ends[i].x, ends[i].y, d.value);
+            } else {
+              work.line(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value);
+              if (sym === 'horizontal' || sym === 'quad' || sym === 'radial') work.line(gridW-1-d.start.x, d.start.y, gridW-1-d.cur.x, d.cur.y, d.value);
+              if (sym === 'vertical' || sym === 'quad' || sym === 'radial') work.line(d.start.x, gridH-1-d.start.y, d.cur.x, gridH-1-d.cur.y, d.value);
+              if (sym === 'quad' || sym === 'radial') work.line(gridW-1-d.start.x, gridH-1-d.start.y, gridW-1-d.cur.x, gridH-1-d.cur.y, d.value);
+            }
+          }
+        } else {
+          // rect with symmetry: draw rect at each symmetric position
+          if (sym === 'none') work.rect(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value, false);
+          else {
+            const pts = symmetricPoints(d.start.x, d.start.y, gridW, gridH, sym);
+            const pts2 = symmetricPoints(d.cur.x, d.cur.y, gridW, gridH, sym);
+            if (pts.length === pts2.length) {
+              for (let i=0;i<pts.length;i++) work.rect(pts[i].x, pts[i].y, pts2[i].x, pts2[i].y, d.value, false);
+            } else {
+              work.rect(d.start.x, d.start.y, d.cur.x, d.cur.y, d.value, false);
+            }
+          }
+        }
         commitWork(work, tool === 'line' ? 'Line' : 'Rectangle');
         setStroke(null);
         break;
@@ -803,6 +916,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       case 'l': handled(); setTool(slot, 'line'); break;
       case 'r': handled(); setTool(slot, 'rect'); break;
       case 'm': case 's': handled(); setTool(slot, 'select'); break;
+      case 'w': handled(); setTool(slot, 'wand'); break;
       case 'g': handled(); toggleGridLines(slot); break;
       case 'h': handled(); toggleMetricsHud(slot); break;
       case 'i': handled(); transform('Invert', (bm) => bm.invert()); break;
@@ -888,12 +1002,32 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
 
           <Stack sx={{ alignItems: 'center' }} direction="row" aria-label="View">
             <Action tip="Toggle grid lines (G)" label="Toggle grid lines" active={ui.showGrid} icon={<GridOnIcon fontSize="small" />} onClick={() => toggleGridLines(slot)} />
+            <Action tip="Toggle tile preview 3×3" label="Tile preview" active={ui.showTilePreview} icon={<GridOnIcon fontSize="small" />} onClick={() => toggleTilePreview(slot)} />
             <Action tip="Zoom out (-)" label="Zoom out" icon={<ZoomOutIcon fontSize="small" />} onClick={() => zoomBy(-1)} />
             <Typography variant="caption" color="text.secondary" sx={{ minWidth: 64, textAlign: 'center' }}>
               {zoom}px / cell
             </Typography>
             <Action tip="Zoom in (+)" label="Zoom in" icon={<ZoomInIcon fontSize="small" />} onClick={() => zoomBy(1)} />
           </Stack>
+
+          <TextField
+            select
+            label="Symmetry"
+            size="small"
+            value={(glyph.symmetry as string) ?? 'none'}
+            onChange={(e) => {
+              const v = e.target.value as SymmetryMode;
+              commit(slot, `Symmetry ${v}`, (d) => setGlyphSymmetry(d, glyph.id, v));
+            }}
+            sx={{ width: 150 }}
+            title="Mirror drawing: horizontal, vertical, quad or radial. One undo per stroke includes mirrored pixels."
+          >
+            <MenuItem value="none">None</MenuItem>
+            <MenuItem value="horizontal">↔ Horizontal</MenuItem>
+            <MenuItem value="vertical">↕ Vertical</MenuItem>
+            <MenuItem value="quad">⊞ Quad (4-way)</MenuItem>
+            <MenuItem value="radial">✧ Radial</MenuItem>
+          </TextField>
 
           <TextField
             select
@@ -983,6 +1117,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
           <Figure caption="actual size"><canvas ref={actualRef} style={{ display: 'block', imageRendering: 'pixelated' }} /></Figure>
           <Figure caption="enlarged"><canvas ref={bigRef} style={{ display: 'block', imageRendering: 'pixelated' }} /></Figure>
           <Figure caption="LED matrix"><canvas ref={ledRef} style={{ display: 'block' }} /></Figure>
+          <TilePreview slot={slot} />
           <Box>
             {led && (
               <Chip size="small" color="secondary" sx={{ mb: 0.75 }} label={`LED ${ledLabel(led)} · ${led.cellUnits} units/px · spacing ${led.spacing}px`} />
