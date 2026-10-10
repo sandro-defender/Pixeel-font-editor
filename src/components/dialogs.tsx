@@ -1117,17 +1117,11 @@ export function RasterizeDialog(props: { slot: Slot; glyphId: string }) {
       <Stack spacing={1}>
         <Typography variant="subtitle2" id="raster-height-label">
           Grid height — {raster.height} rows covering the glyph
-          {raster.height !== gridH ? ` (asked for ${gridH})` : ''}
         </Typography>
         <Slider value={gridH} min={4} max={MAX_GRID} onChange={(_, v) => setGridH(v as number)} aria-labelledby="raster-height-label" />
         <Hint>
           The grid is sized from the glyph's own ink, so thin strokes keep a full pixel instead of falling between samples. More rows = more detail; the preview updates live.
         </Hint>
-        {result && result.frame.gridHeight !== gridH && (
-          <Alert severity="info">
-            This glyph is much taller than it is wide, so the grid was made {result.frame.gridHeight} rows tall to resolve its thin stem.
-          </Alert>
-        )}
         {result?.refined && (
           <Alert severity="info">
             The outline is thinner than one pixel at this size; the preview was re-sampled more finely so nothing disappears. Raise the grid height for a cleaner result.
