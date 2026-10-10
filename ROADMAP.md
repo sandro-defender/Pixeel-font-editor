@@ -38,10 +38,10 @@ Goal: Make daily editing faster, more keyboard-friendly, and more discoverable.
 
 ---
 
-## Step 2 — Pro Pixel Editing Tools
+## Step 2 — Pro Pixel Editing Tools ✅ DONE
 Goal: Bring Pixeel's pixel editor to parity with dedicated pixel art tools.
 
-### Slice 2.1 — Symmetry & Mirroring
+### Slice 2.1 — Symmetry & Mirroring ✅ done
 - **What:** Symmetry modes: horizontal, vertical, quad, radial. Toggle in pixel toolbar, live preview of mirrored strokes. Works with pencil, eraser, line, rect.
 - **Acceptance:**
   - Symmetry state per glyph, persisted in project file.
@@ -49,7 +49,7 @@ Goal: Bring Pixeel's pixel editor to parity with dedicated pixel art tools.
   - Visual symmetry guides.
   - Tests for symmetry math.
 
-### Slice 2.2 — Tile Preview & Seamless Mode
+### Slice 2.2 — Tile Preview & Seamless Mode ✅ done
 - **What:** Tile preview panel showing glyph repeated 3×3, useful for pattern fonts and borders. Seamless mode highlights edge pixels that would tile.
 - **Acceptance:**
   - Toggle in editor toolbar.
@@ -57,7 +57,7 @@ Goal: Bring Pixeel's pixel editor to parity with dedicated pixel art tools.
   - Works for both pixel and outline preview.
   - Tests.
 
-### Slice 2.3 — Magic Wand & Improved Fill
+### Slice 2.3 — Magic Wand & Improved Fill ✅ done
 - **What:** Magic wand selection (contiguous similar color), tolerance slider, contiguous fill option, fill preview. Improves existing fill tool.
 - **Acceptance:**
   - Wand selects contiguous empty or filled region.
@@ -157,7 +157,7 @@ Goal: Support more formats for broader adoption.
 
 ## Current Progress
 - Step 1: ✅ done (Command palette, Metrics HUD, Onboarding & Help)
-- Step 2: ⬜ not started
+- Step 2: ✅ done (Symmetry & Mirroring, Tile Preview & Seamless, Magic Wand & Improved Fill)
 - Step 3: ⬜ not started
 - Step 4: ⬜ not started
 - Step 5: ⬜ not started
