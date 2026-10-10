@@ -180,11 +180,12 @@ export function defaultRasterizeFrame(
   const withBaseline = spanWithBaseline <= inkH * 3;
   const top = withBaseline ? Math.max(bb.yMax, 0) : bb.yMax;
   const bottom = withBaseline ? Math.min(bb.yMin, 0) : bb.yMin;
-  // A glyph much narrower than it is tall (hairline stems) would need cells
-  // wider than its own ink; use more rows — up to the grid limit — so the thin
-  // direction still gets resolved instead of falling between the probes.
-  const aspectRows = inkW > 0 ? Math.ceil(inkH / inkW) + 1 : 0;
-  const rows = Math.min(MAX_GRID, Math.max(requested, aspectRows));
+  // The row count is exactly what the user asked for: picking 8 rows must give
+  // an 8-row glyph. (Narrow tall glyphs such as l, I, i or | used to be given
+  // extra rows here, so at small heights they came out taller than the rest of
+  // the font.) Thin strokes that fall between the cell centres are still picked
+  // up by the denser re-sampling in rasterizeContoursWithRetry.
+  const rows = requested;
   // rows cover the span plus one cell of margin (half a cell above and below)
   let unitsPerCell = Math.max(1e-6, top - bottom) / (rows - 1);
   // a very wide glyph must still fit the hard grid limit: coarsen the cells instead of clipping

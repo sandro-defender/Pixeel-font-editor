@@ -127,6 +127,22 @@ describe('rasterize vector glyph → pixel grid', () => {
     expect(bm.count()).toBeGreaterThan(0);
   });
 
+  it('produces exactly the requested number of rows, even for tall narrow glyphs', async () => {
+    // Regression: tall narrow glyphs (l, I, i, |) used to get extra rows at small
+    // heights — picking 8 px gave a 10-row l next to an 8-row o.
+    const doc = await lato();
+    const contoursOf = contoursOfDoc(doc);
+    for (const ch of ['l', 'I', 'i', 'o', 'a']) {
+      for (const h of [8, 12, 16]) {
+        const cs = contoursOf(ch.charCodeAt(0));
+        const { pixel } = rasterizeGlyphContours(cs, doc.metrics, h);
+        expect(pixel.height, `${ch} at ${h}px`).toBe(h);
+        const bm = Bitmap.fromB64(pixel.width, pixel.height, pixel.cellsB64);
+        expect(bm.count(), `${ch} at ${h}px keeps its stroke`).toBeGreaterThan(0);
+      }
+    }
+  });
+
   it('falls back to the em frame for glyphs without ink (spaces)', () => {
     const frame = defaultRasterizeFrame([], metrics, 16);
     expect(frame.gridHeight).toBe(16);
