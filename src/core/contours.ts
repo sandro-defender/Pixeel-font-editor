@@ -168,26 +168,46 @@ export function signedArea(contour: Contour): number {
 /**
  * Winding number of point (px, py) against contours (curves flattened).
  * Nonzero winding ⇒ inside for TrueType fill rule.
+ *
+ * Prefer `createWindingTester` when testing many points against the same
+ * contours: it flattens the curves once instead of per point.
  */
 export function windingNumber(contours: Contour[], px: number, py: number, stepsPerCurve = 8): number {
-  let winding = 0;
+  return createWindingTester(contours, stepsPerCurve)(px, py);
+}
+
+/**
+ * Flatten contours once and return a fast point-in-shape predicate.
+ * The returned function is O(edges) per query with no allocation, which keeps
+ * rasterization of large grids (and whole fonts) responsive.
+ */
+export function createWindingTester(contours: Contour[], stepsPerCurve = 8): (px: number, py: number) => number {
+  // flattened edges as a flat array: ax, ay, bx, ay, bx, by, ...
+  const edges: number[] = [];
   for (const c of contours) {
     const pts = segmentsToPolyline(contourToSegments(c), stepsPerCurve);
     for (let i = 0; i < pts.length; i++) {
       const a = pts[i];
       const b = pts[(i + 1) % pts.length];
-      if (a.y <= py) {
-        if (b.y > py && isLeft(a, b, px, py) > 0) winding += 1;
-      } else if (b.y <= py && isLeft(a, b, px, py) < 0) {
+      edges.push(a.x, a.y, b.x, b.y);
+    }
+  }
+  const n = edges.length;
+  return (px: number, py: number): number => {
+    let winding = 0;
+    for (let i = 0; i < n; i += 4) {
+      const ax = edges[i];
+      const ay = edges[i + 1];
+      const bx = edges[i + 2];
+      const by = edges[i + 3];
+      if (ay <= py) {
+        if (by > py && (bx - ax) * (py - ay) - (px - ax) * (by - ay) > 0) winding += 1;
+      } else if (by <= py && (bx - ax) * (py - ay) - (px - ax) * (by - ay) < 0) {
         winding -= 1;
       }
     }
-  }
-  return winding;
-}
-
-function isLeft(a: VectorPoint, b: VectorPoint, px: number, py: number): number {
-  return (b.x - a.x) * (py - a.y) - (px - a.x) * (b.y - a.y);
+    return winding;
+  };
 }
 
 /** Normalize a contour: integer coords, drop redundant collinear on-curve points. */

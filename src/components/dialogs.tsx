@@ -34,7 +34,10 @@ import {
   bitmapToColumnHex,
   checkLedFont,
   columnBytesToBitmap,
+  conformGlyphToLed,
   defaultLedSpec,
+  ledDescentRowsFor,
+  ledFontScale,
   ledLabel,
   normalizeLedSpec,
 } from '../core/ledMatrix';
@@ -43,13 +46,13 @@ import { validateMeta, deriveMetaFields } from '../core/metadata';
 import { applyLicense, buildLicenseTxt, LICENSING_DISCLAIMER, type LicenseMode } from '../core/license';
 import { buildOFLLicense, OFL_VERSION_NOTE } from '../core/oflText';
 import { exportFont } from '../services/exportService';
-import { DEFAULT_EXPORT_OPTIONS, type ExportReport } from '../core/fontCodec';
+import { DEFAULT_EXPORT_OPTIONS, resolveGlyphContours, type ExportReport } from '../core/fontCodec';
 import { downloadArrayBuffer, downloadBlob } from '../services/persistence';
 import { releaseSourcesNotIn } from '../services/fileActions';
 import { findConflicts, sourceAfterMove, transferGlyphs, type CollisionStrategy, type MetricsMode } from '../core/transfer';
-import { rasterizeContours, defaultRasterizeFrame } from '../core/rasterize';
+import { rasterizeGlyphContours } from '../core/rasterize';
 import { Bitmap, MAX_GRID } from '../core/bitmap';
-import { paintBitmap, toRgba } from '../render/bitmapCanvas';
+import { ledDotSize, paintBitmap, paintLedDots, toRgba } from '../render/bitmapCanvas';
 import { AppDialog, Hint, SegmentedControl, Section } from './ui';
 
 /** Numeric field that keeps a number (NaN when empty) and reports it. */
@@ -1055,8 +1058,12 @@ export function RasterizeDialog(props: { slot: Slot; glyphId: string }) {
   const [gridH, setGridH] = useState(16);
   const previewRef = useRef<HTMLCanvasElement>(null);
 
-  const frame = useMemo(() => (doc ? defaultRasterizeFrame(contours, doc.metrics, Math.max(4, Math.min(MAX_GRID, gridH))) : null), [contours, doc, gridH]);
-  const raster = useMemo(() => (frame ? rasterizeContours(contours, frame) : null), [contours, frame]);
+  // works for outline-less glyphs too (they get an empty grid + a warning)
+  const result = useMemo(
+    () => (doc ? rasterizeGlyphContours(contours, doc.metrics, Math.max(4, Math.min(MAX_GRID, gridH))) : null),
+    [contours, doc, gridH],
+  );
+  const raster = result?.pixel ?? null;
 
   useEffect(() => {
     const canvas = previewRef.current;
@@ -1088,6 +1095,8 @@ export function RasterizeDialog(props: { slot: Slot; glyphId: string }) {
     closeModal();
   };
 
+  const lit = Bitmap.fromB64(raster.width, raster.height, raster.cellsB64).count();
+
   return (
     <AppDialog
       title={`Convert to pixel grid — ${glyph.name}`}
@@ -1107,9 +1116,24 @@ export function RasterizeDialog(props: { slot: Slot; glyphId: string }) {
       </Alert>
       <Stack spacing={1}>
         <Typography variant="subtitle2" id="raster-height-label">
-          Grid height — {gridH} rows across ascent→descent
+          Grid height — {raster.height} rows covering the glyph
+          {raster.height !== gridH ? ` (asked for ${gridH})` : ''}
         </Typography>
-        <Slider value={gridH} min={4} max={64} onChange={(_, v) => setGridH(v as number)} aria-labelledby="raster-height-label" />
+        <Slider value={gridH} min={4} max={MAX_GRID} onChange={(_, v) => setGridH(v as number)} aria-labelledby="raster-height-label" />
+        <Hint>
+          The grid is sized from the glyph's own ink, so thin strokes keep a full pixel instead of falling between samples. More rows = more detail; the preview updates live.
+        </Hint>
+        {result && result.frame.gridHeight !== gridH && (
+          <Alert severity="info">
+            This glyph is much taller than it is wide, so the grid was made {result.frame.gridHeight} rows tall to resolve its thin stem.
+          </Alert>
+        )}
+        {result?.refined && (
+          <Alert severity="info">
+            The outline is thinner than one pixel at this size; the preview was re-sampled more finely so nothing disappears. Raise the grid height for a cleaner result.
+          </Alert>
+        )}
+        {lit === 0 && <Alert severity="error">This glyph has no drawable outline — nothing to rasterize.</Alert>}
       </Stack>
       <Stack sx={{ alignItems: 'center' }} direction="row" spacing={2}>
         <Box
@@ -1119,7 +1143,10 @@ export function RasterizeDialog(props: { slot: Slot; glyphId: string }) {
           sx={{ border: 1, borderColor: 'divider', borderRadius: 1, maxWidth: '100%', imageRendering: 'pixelated', bgcolor: 'background.default' }}
         />
         <Hint>
-          {raster.width}×{raster.height} cells · {raster.unitsPerCell.toFixed(1)} units/cell · baseline row {raster.baselineRow}
+          {raster.width}×{raster.height} cells · {raster.unitsPerCell.toFixed(1)} units/cell ·{' '}
+          {raster.baselineRow >= 0 && raster.baselineRow < raster.height
+            ? `baseline row ${raster.baselineRow}`
+            : `baseline ${Math.abs(raster.baselineRow)} row${Math.abs(raster.baselineRow) === 1 ? '' : 's'} ${raster.baselineRow < 0 ? 'above' : 'below'} the grid`}
         </Hint>
       </Stack>
     </AppDialog>
@@ -1139,6 +1166,17 @@ function PixelPreview(props: { bm: Bitmap | null; theme: 'light' | 'dark' }) {
     paintBitmap(c, bm, cell, { on: toRgba('#fbbf24'), off: toRgba('#111827') });
   }, [props.bm, props.theme]);
   return <Box component="canvas" ref={ref} aria-label="Glyph preview" sx={{ maxWidth: '100%', imageRendering: 'pixelated', border: 1, borderColor: 'divider', borderRadius: 1 }} />;
+}
+
+/** LED-panel preview of a bitmap: one glowing dot per lit cell. */
+function LedPreview(props: { bm: Bitmap }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const c = ref.current;
+    if (!c) return;
+    paintLedDots(c, props.bm, ledDotSize(props.bm, 96));
+  }, [props.bm]);
+  return <Box component="canvas" ref={ref} aria-label="LED preview" sx={{ maxWidth: '100%', imageRendering: 'pixelated', borderRadius: 1 }} />;
 }
 
 export function PixelCodeDialog(props: { slot: Slot; glyphId: string }) {
@@ -1270,25 +1308,60 @@ export function LedMatrixDialog(props: { slot: Slot }) {
     if (template) {
       return { rows: template.height, cols: template.width, spacing: 1, cellUnits: Math.max(1, Math.round(template.unitsPerCell)), descentRows: template.baselineRow };
     }
+    // Suggest a matrix that fits this font's design: the em becomes
+    // `rows × cellUnits` units and the descenders get the rows they need, so
+    // the converted letters keep their full height instead of being clipped
+    // to the bottom of the panel.
+    if (doc) {
+      const rows = 16;
+      const contoursOf = (g: (typeof doc.glyphs)[number]) => resolveGlyphContours(g, doc.glyphs);
+      const cellUnits = Math.max(1, Math.round(doc.metrics.unitsPerEm / rows));
+      return { rows, cols: 8, spacing: 1, cellUnits, descentRows: ledDescentRowsFor(doc, rows, contoursOf) };
+    }
     return defaultLedSpec();
-  }, [current, template]);
+  }, [current, template, doc]);
   const [rows, setRows] = useState(initial.rows);
   const [cols, setCols] = useState(initial.cols);
   const [spacing, setSpacing] = useState(initial.spacing);
   const [cell, setCell] = useState(initial.cellUnits);
   const [below, setBelow] = useState(initial.descentRows);
 
-  if (!doc) return <GoneNotice title="LED matrix" onClose={closeModal} />;
+  const specResult = useMemo<{ spec: LedMatrixSpec | null; error: string | null }>(() => {
+    try {
+      return { spec: normalizeLedSpec({ rows, cols, spacing, cellUnits: cell, descentRows: below }), error: null };
+    } catch (err) {
+      return { spec: null, error: err instanceof Error ? err.message : String(err) };
+    }
+  }, [rows, cols, spacing, cell, below]);
+  const spec = specResult.spec;
+  const error = specResult.error;
 
-  let spec: LedMatrixSpec | null = null;
-  let error: string | null = null;
-  try {
-    spec = normalizeLedSpec({ rows, cols, spacing, cellUnits: cell, descentRows: below });
-  } catch (err) {
-    error = err instanceof Error ? err.message : String(err);
-  }
-  const check = current ? checkLedFont(doc) : null;
-  const vectorCount = doc.glyphs.filter((g) => !g.pixel && (g.kind === 'vector' || g.kind === 'compound' || g.contours.length > 0)).length;
+  const hasDoc = doc;
+  const vectorCount = hasDoc ? hasDoc.glyphs.filter((g) => !g.pixel && (g.kind === 'vector' || g.kind === 'compound' || g.contours.length > 0)).length : 0;
+
+  // What the conversion will do to this font's letters: the design is scaled
+  // onto the matrix (see ledFontScale), so previewing real glyphs is the only
+  // honest way to show the result before committing to it.
+  const preview = useMemo<Array<{ label: string; bm: Bitmap }> | null>(() => {
+    if (!hasDoc || !spec || vectorCount === 0) return null;
+    const contoursOf = (g: (typeof hasDoc.glyphs)[number]) => resolveGlyphContours(g, hasDoc.glyphs);
+    const scale = ledFontScale(hasDoc, spec, contoursOf);
+    const out: Array<{ label: string; bm: Bitmap }> = [];
+    for (const ch of ['A', 'g', 'H', 'o', 'S', '8']) {
+      const g = hasDoc.glyphs.find((x) => x.unicode === ch.codePointAt(0) && x.contours.length > 0);
+      if (!g) continue;
+      const led = conformGlyphToLed(g, spec, contoursOf, { scale });
+      if (!led.pixel) continue;
+      out.push({ label: ch, bm: Bitmap.fromB64(led.pixel.width, led.pixel.height, led.pixel.cellsB64) });
+      if (out.length === 3) break;
+    }
+    return out.length ? out : null;
+  }, [hasDoc, spec, vectorCount]);
+
+  const descentNeed = hasDoc ? ledDescentRowsFor(hasDoc, rows, (g) => resolveGlyphContours(g, hasDoc.glyphs)) : 0;
+  const check = hasDoc && current ? checkLedFont(hasDoc) : null;
+
+  if (!doc) return <GoneNotice title="LED matrix" onClose={closeModal} />;
 
   const apply = async () => {
     if (!spec) return;
@@ -1339,6 +1412,32 @@ export function LedMatrixDialog(props: { slot: Slot }) {
         In LED mode every glyph lives on one pixel grid: each lit pixel is exactly <em>units per pixel</em> font units, offsets and side bearings are whole pixels, and every advance is
         (width + spacing) × units per pixel. This makes the TTF render exactly like the LED panel.
       </Hint>
+      {vectorCount > 0 && (
+        <Alert severity="info">
+          {vectorCount} vector glyph(s) will be rasterized to pixels to match the LED grid. Their outlines are replaced by pixels; Undo (Ctrl+Z) reverts the change.
+        </Alert>
+      )}
+      {preview && (
+        <Section title="Preview — sample letters on this matrix">
+          <Stack direction="row" spacing={2} sx={{ flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            {preview.map((p) => (
+              <Stack key={p.label} sx={{ alignItems: 'center' }}>
+                <LedPreview bm={p.bm} />
+                <Hint>{p.label}</Hint>
+              </Stack>
+            ))}
+          </Stack>
+          <Hint>
+            The whole design is scaled onto the matrix, so the letters keep their proportions instead of being clipped to the bottom of the panel. More rows or bigger cells give finer detail.
+          </Hint>
+        </Section>
+      )}
+      {spec && below < descentNeed && (
+        <Alert severity="warning">
+          This font's descenders need {descentNeed} row{descentNeed === 1 ? '' : 's'} below the baseline. With {below} the whole design is scaled down so they still fit — raise “Rows below
+          baseline” to keep the letters at full size.
+        </Alert>
+      )}
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr 1fr' }, gap: 2 }}>
         <NumberField label="Matrix height (rows)" value={rows} onChange={setRows} min={1} max={MAX_GRID} ariaLabel="LED rows" />
         <NumberField label="Default width (columns)" value={cols} onChange={setCols} min={1} max={MAX_GRID} ariaLabel="LED columns" />
@@ -1394,7 +1493,6 @@ export function LedMatrixDialog(props: { slot: Slot }) {
               </ul>
             </Alert>
           ))}
-        {vectorCount > 0 && <Alert severity="info">{vectorCount} vector glyph(s) will be rasterized to pixels to match the LED grid. Undo (Ctrl+Z) reverts the change.</Alert>}
       </Section>
     </AppDialog>
   );

@@ -15,12 +15,13 @@
  * the UI, transfers, export validation and the tests.
  */
 import { Bitmap, MAX_GRID, b64ToBytes } from './bitmap';
-import { contourBounds } from './contours';
-import { rasterizeContours } from './rasterize';
+import { contourBounds, scaleContours } from './contours';
+import { rasterizeContoursWithRetry } from './rasterize';
 import type { Contour, FontDoc, FontMetrics, GlyphDoc, LedMatrixSpec } from './types';
 
 /** Largest matrix height supported (matches the editor's grid limit). */
-export const LED_MAX_ROWS = MAX_GRID;
+/** Hard limit for any LED grid dimension (rows or columns). */
+export const LED_MAX_CELLS = MAX_GRID;
 export const LED_MAX_SPACING = 32;
 /** Default LED pixel size: 100 units → 5×7 font has unitsPerEm 700. */
 export const DEFAULT_LED_CELL_UNITS = 100;
@@ -58,8 +59,8 @@ export function normalizeLedSpec(input: LedMatrixSpec): LedMatrixSpec {
     if (r < lo || r > hi) throw new Error(`${label} must be between ${lo} and ${hi}.`);
     return r;
   };
-  const rows = int(input.rows, 1, LED_MAX_ROWS, 'Matrix height (rows)');
-  const cols = int(input.cols, 1, LED_MAX_ROWS, 'Default width (columns)');
+  const rows = int(input.rows, 1, LED_MAX_CELLS, 'Matrix height (rows)');
+  const cols = int(input.cols, 1, LED_MAX_CELLS, 'Default width (columns)');
   const spacing = int(input.spacing, 0, LED_MAX_SPACING, 'Letter spacing');
   const cellUnits = int(input.cellUnits, 1, Math.floor(MAX_UNITS_PER_EM / rows), 'Units per LED pixel');
   const descentRows = int(input.descentRows, 0, rows - 1, 'Rows below baseline');
@@ -123,17 +124,108 @@ export function reanchorRows(bm: Bitmap, oldBaseline: number, newHeight: number,
 export type ContoursOf = (g: GlyphDoc) => Contour[];
 
 /**
+ * The font's vertical design span: ascent→descent, widened to the real ink
+ * when the line metrics understate the drawing. Extreme outliers (the tallest
+ * and deepest 5% of glyphs) are ignored so one unusual glyph cannot shrink the
+ * whole font.
+ */
+export function designSpan(doc: FontDoc, contoursOf: ContoursOf): number {
+  let span = Math.max(1, doc.metrics.ascent - doc.metrics.descent);
+  const lows: number[] = [];
+  const highs: number[] = [];
+  for (const g of doc.glyphs) {
+    if (g.name === '.notdef') continue;
+    const cs = contoursOf(g);
+    if (!cs.length) continue;
+    const bb = contourBounds(cs);
+    if (!bb) continue;
+    lows.push(bb.yMin);
+    highs.push(bb.yMax);
+  }
+  if (lows.length >= 8) {
+    lows.sort((a, b) => a - b);
+    highs.sort((a, b) => b - a);
+    const at = (arr: number[], q: number) => arr[Math.min(arr.length - 1, Math.floor(arr.length * q))];
+    span = Math.max(span, at(highs, 0.05) - at(lows, 0.05));
+  }
+  return span;
+}
+
+/**
+ * Scale that maps a design of vertical extent `span` onto an LED matrix.
+ *
+ * The matrix is `rows × cellUnits` font units tall, but a font designed for a
+ * 1000–2048 unit em does not fit that band: sampling it at its own coordinates
+ * only ever saw the bottom `rows × cellUnits` units, which cut the tops off
+ * every capital and made every glyph that sits above that band vanish. Scaling
+ * by `matrixEm / span` maps the design onto the matrix instead.
+ *
+ * The result is finally clamped to the rows the matrix actually has above and
+ * below the baseline, so the design never spills out of the grid.
+ */
+export function ledScaleFromSpan(span: number, spec: LedMatrixSpec, ascent: number, descent: number): number {
+  const matrixEm = spec.rows * spec.cellUnits;
+  let scale = matrixEm / Math.max(1, span);
+  const topRoom = (spec.rows - spec.descentRows) * spec.cellUnits;
+  const botRoom = spec.descentRows * spec.cellUnits;
+  const asc = Math.max(0, ascent);
+  const desc = Math.max(0, -descent);
+  if (topRoom > 0 && asc > 0 && asc * scale > topRoom) scale = topRoom / asc;
+  if (botRoom > 0 && desc > 0 && desc * scale > botRoom) scale = botRoom / desc;
+  return scale;
+}
+
+/**
+ * Uniform scale that maps a whole font's design onto an LED matrix: the span
+ * of its own drawing (see `designSpan`) becomes the height of the matrix.
+ */
+export function ledFontScale(doc: FontDoc, spec: LedMatrixSpec, contoursOf: ContoursOf): number {
+  return ledScaleFromSpan(designSpan(doc, contoursOf), spec, doc.metrics.ascent, doc.metrics.descent);
+}
+
+/**
+ * How many rows below the baseline an LED matrix needs for a font's
+ * descenders to survive the conversion at full size (whole pixels). Used to
+ * suggest a spec when a font is turned into an LED font: fewer rows force the
+ * whole design to shrink so the descenders still fit.
+ */
+export function ledDescentRowsFor(doc: FontDoc, rows: number, contoursOf: ContoursOf): number {
+  const descent = Math.max(0, -doc.metrics.descent);
+  if (descent === 0) return 0;
+  // rows needed = descent × (matrixEm / designSpan) / cellUnits, cellUnits cancels
+  const needed = (descent * rows) / designSpan(doc, contoursOf);
+  return Math.max(0, Math.min(rows - 1, Math.ceil(needed - 1e-9)));
+}
+
+export interface LedConformOptions {
+  /**
+   * Uniform scale applied to vector/compound outlines before they are
+   * rasterized onto the matrix (default 1 = use the coordinates as they are).
+   *
+   * Converting a whole font passes `matrixEm / designSpan` (see
+   * `ledFontScale`): without it the matrix only samples the bottom
+   * `rows × cellUnits` font units, so a 2048-upm font converted to a 7-row
+   * matrix lost the top of every letter — and every glyph that sits above the
+   * sampled band disappeared completely.
+   */
+  scale?: number;
+}
+
+/**
  * Snap one glyph onto the LED grid and return the updated glyph object.
  *  - pixel glyphs: rows are re-anchored to the matrix height and baseline,
  *    cell size / baseline are set to the matrix, the origin is kept on a whole
  *    pixel boundary and the advance becomes (width + spacing) pixels.
- *  - vector / composite glyphs: rasterized onto the matrix (lossy). The
- *    original outline is kept in `sourceContours` so it can still be inspected.
+ *  - vector / composite glyphs: rasterized onto the matrix (lossy), scaled by
+ *    `opts.scale` so the font's design maps onto the matrix instead of being
+ *    clipped to its bottom rows. The original outline is kept in
+ *    `sourceContours` so it can still be inspected.
  *  - empty glyphs: receive a blank pixel grid, except .notdef which stays empty.
  */
-export function conformGlyphToLed(g: GlyphDoc, spec: LedMatrixSpec, contoursOf: ContoursOf): GlyphDoc {
+export function conformGlyphToLed(g: GlyphDoc, spec: LedMatrixSpec, contoursOf: ContoursOf, opts: LedConformOptions = {}): GlyphDoc {
   if (g.name === '.notdef') return g;
   const u = spec.cellUnits;
+  const scale = opts.scale ?? 1;
   const contours = g.pixel ? [] : contoursOf(g);
 
   let width: number;
@@ -148,25 +240,30 @@ export function conformGlyphToLed(g: GlyphDoc, spec: LedMatrixSpec, contoursOf: 
     offsetX = Math.round(g.pixel.offsetX / u) * u;
     cellsB64 = bm.toB64();
   } else if (contours.length) {
-    const bb = contourBounds(contours);
+    const scaled = scale === 1 ? contours : scaleContours(contours, scale);
+    const bb = contourBounds(scaled);
     const xMin = bb ? bb.xMin : 0;
     const xMax = bb ? bb.xMax : 0;
     // Cover the ink, but never narrower than the matrix default width.
     const col0 = Math.min(0, Math.floor(xMin / u));
     const col1 = Math.max(spec.cols, Math.ceil(Math.max(xMax, 0) / u));
-    width = Math.max(1, Math.min(LED_MAX_ROWS, col1 - col0));
+    width = Math.max(1, Math.min(LED_MAX_CELLS, col1 - col0));
     offsetX = col0 * u;
-    const pixel = rasterizeContours(contours, {
+    // majority coverage keeps the LED pixels clean at this resolution; the
+    // retry inside guarantees ink thinner than a cell still shows up
+    const pixel = rasterizeContoursWithRetry(scaled, {
       gridWidth: width,
       gridHeight: spec.rows,
       unitsPerCell: u,
       offsetX,
       baselineRow: spec.descentRows,
+      samplesPerCell: 2,
+      minSamples: 2,
     });
     cellsB64 = pixel.cellsB64;
     sourceContours = g.sourceContours ?? contours.map((c) => c.map((p) => ({ ...p })));
   } else {
-    width = Math.max(1, Math.min(LED_MAX_ROWS, spaceWidthFor(spec)));
+    width = Math.max(1, Math.min(LED_MAX_CELLS, spaceWidthFor(spec)));
     offsetX = 0;
     cellsB64 = new Bitmap(width, spec.rows).toB64();
   }
@@ -328,7 +425,7 @@ export function asciiToBitmap(text: string): PixelTextParse {
   if (lines.length === 0) throw new Error('Paste or type at least one row of pixels.');
   const width = Math.max(...lines.map((l) => l.length));
   if (width < 1) throw new Error('Rows are empty.');
-  if (width > LED_MAX_ROWS || lines.length > LED_MAX_ROWS) throw new Error(`Grid is limited to ${LED_MAX_ROWS}×${LED_MAX_ROWS}.`);
+  if (width > LED_MAX_CELLS || lines.length > LED_MAX_CELLS) throw new Error(`Grid is limited to ${LED_MAX_CELLS}×${LED_MAX_CELLS}.`);
   const bm = new Bitmap(width, lines.length);
   const warnings: string[] = [];
   lines.forEach((line, i) => {
@@ -392,7 +489,7 @@ export function columnBytesToBitmap(text: string, rows: number): { bitmap: Bitma
     throw new Error(`Got ${values.length} bytes; ${rows} rows need ${bpc} byte(s) per column, so the count must be a multiple of ${bpc}.`);
   }
   const width = values.length / bpc;
-  if (width > LED_MAX_ROWS) throw new Error(`Grid is limited to ${LED_MAX_ROWS} columns.`);
+  if (width > LED_MAX_CELLS) throw new Error(`Grid is limited to ${LED_MAX_CELLS} columns.`);
   const warnings: string[] = [];
   if (values.some((v) => v < 0 || v > 255)) {
     throw new Error('Each byte must be between 0x00 and 0xFF.');
