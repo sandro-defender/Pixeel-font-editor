@@ -72,7 +72,7 @@ Goal: Bring Pixeel's pixel editor to parity with dedicated pixel art tools.
 ## Step 3 — Typography & Metrics Control
 Goal: Full control over spacing and vertical metrics.
 
-### Slice 3.1 — Visual Advance & Bearings Editor
+### Slice 3.1 — Visual Advance & Bearings Editor ✅ done
 - **What:** Drag handles in editor to adjust advance width, left and right side bearings visually. Numeric inputs remain. Snap to pixel grid option.
 - **Acceptance:**
   - Dragging updates metrics live, undoable.
@@ -80,7 +80,7 @@ Goal: Full control over spacing and vertical metrics.
   - Guides show bearing lines.
   - Tests for metric updates.
 
-### Slice 3.2 — Kerning Pairs Editor
+### Slice 3.2 — Kerning Pairs Editor ✅ done
 - **What:** UI to view, add, edit, delete kerning pairs (GPOS/kern). Live preview in text preview panel with pair highlighting. Import existing kerning from font.
 - **Acceptance:**
   - List of pairs with search, sorted by frequency.
@@ -89,7 +89,7 @@ Goal: Full control over spacing and vertical metrics.
   - Export preserves kerning, re-import round-trips.
   - Tests.
 
-### Slice 3.3 — Vertical Metrics Editor
+### Slice 3.3 — Vertical Metrics Editor ✅ done
 - **What:** Dialog to edit ascent, descent, lineGap, typoAsc/Desc, winAsc/Desc, with visual preview of line box and baseline. Presets for common ratios.
 - **Acceptance:**
   - Visual preview of metrics.
@@ -158,6 +158,6 @@ Goal: Support more formats for broader adoption.
 ## Current Progress
 - Step 1: ✅ done (Command palette, Metrics HUD, Onboarding & Help)
 - Step 2: ✅ done (Symmetry & Mirroring, Tile Preview & Seamless, Magic Wand & Improved Fill)
-- Step 3: ⬜ not started
+- Step 3: ✅ done (Visual Advance & Bearings Editor, Kerning Pairs Editor, Vertical Metrics Editor)
 - Step 4: ⬜ not started
 - Step 5: ⬜ not started
