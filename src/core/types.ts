@@ -40,6 +40,8 @@ export interface PixelData {
 
 export type GlyphKind = 'pixel' | 'vector' | 'compound' | 'empty';
 
+export type SymmetryMode = 'none' | 'horizontal' | 'vertical' | 'quad' | 'radial';
+
 export interface GlyphDoc {
   id: string;
   name: string;
@@ -61,6 +63,8 @@ export interface GlyphDoc {
   edited: boolean;
   /** Original glyph index in the imported font (for preservation/reporting). */
   srcIndex: number | null;
+  /** Symmetry mode for pixel editing, persisted per glyph. */
+  symmetry?: SymmetryMode;
 }
 
 export interface FontMetrics {

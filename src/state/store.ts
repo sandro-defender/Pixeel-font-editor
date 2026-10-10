@@ -59,12 +59,14 @@ interface FontSlotUI {
   glyphListFilter: 'all' | 'mapped' | 'unmapped' | 'edited';
   multiSelected: string[];
   zoom: number;
-  tool: 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select';
+  tool: 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select' | 'wand';
   overlayGlyphId: string | null;
   showGrid: boolean;
   cursor: { x: number; y: number } | null;
   selectionRect: { x: number; y: number; w: number; h: number } | null;
   showMetricsHud: boolean;
+  showTilePreview: boolean;
+  seamlessMode: boolean;
 }
 
 /** A pending yes/no question shown by <ConfirmDialog>; resolved by the user. */
@@ -151,6 +153,9 @@ export interface AppStore {
   setSelectionRect: (slot: Slot, rect: { x: number; y: number; w: number; h: number } | null) => void;
   toggleMetricsHud: (slot: Slot) => void;
   setMetricsHud: (slot: Slot, show: boolean) => void;
+  toggleTilePreview: (slot: Slot) => void;
+  setTilePreview: (slot: Slot, show: boolean) => void;
+  setSeamlessMode: (slot: Slot, show: boolean) => void;
 }
 
 function prefersDark(): boolean {
@@ -173,6 +178,8 @@ const defaultSlotUI = (): FontSlotUI => ({
   cursor: null,
   selectionRect: null,
   showMetricsHud: false,
+  showTilePreview: false,
+  seamlessMode: false,
 });
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -406,6 +413,12 @@ export const useStore = create<AppStore>((set, get) => ({
     set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showMetricsHud: !s.ui[slot].showMetricsHud } } })),
   setMetricsHud: (slot, show) =>
     set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showMetricsHud: show } } })),
+  toggleTilePreview: (slot) =>
+    set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showTilePreview: !s.ui[slot].showTilePreview } } })),
+  setTilePreview: (slot, show) =>
+    set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showTilePreview: show } } })),
+  setSeamlessMode: (slot, show) =>
+    set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], seamlessMode: show } } })),
 }));
 
 // ---------------------------------------------------------------------------

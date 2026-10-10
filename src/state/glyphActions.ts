@@ -263,6 +263,10 @@ export function initializePixelGrid(doc: FontDoc, glyphId: string): FontDoc {
   );
 }
 
+export function setGlyphSymmetry(doc: FontDoc, glyphId: string, symmetry: import('../core/types').SymmetryMode): FontDoc {
+  return withGlyphMap(doc, glyphId, (g) => ({ ...g, symmetry }));
+}
+
 export function makeEmptyGlyph(doc: FontDoc, unicode: number | null, name?: string): GlyphDoc {
   const template = doc.glyphs.find((g) => g.pixel)?.pixel;
   const advance = template
