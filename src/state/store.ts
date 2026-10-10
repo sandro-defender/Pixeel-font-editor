@@ -62,6 +62,9 @@ interface FontSlotUI {
   tool: 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select';
   overlayGlyphId: string | null;
   showGrid: boolean;
+  cursor: { x: number; y: number } | null;
+  selectionRect: { x: number; y: number; w: number; h: number } | null;
+  showMetricsHud: boolean;
 }
 
 /** A pending yes/no question shown by <ConfirmDialog>; resolved by the user. */
@@ -144,6 +147,10 @@ export interface AppStore {
   setTool: (slot: Slot, tool: FontSlotUI['tool']) => void;
   setOverlayGlyph: (slot: Slot, id: string | null) => void;
   toggleGridLines: (slot: Slot) => void;
+  setCursor: (slot: Slot, cursor: { x: number; y: number } | null) => void;
+  setSelectionRect: (slot: Slot, rect: { x: number; y: number; w: number; h: number } | null) => void;
+  toggleMetricsHud: (slot: Slot) => void;
+  setMetricsHud: (slot: Slot, show: boolean) => void;
 }
 
 function prefersDark(): boolean {
@@ -163,6 +170,9 @@ const defaultSlotUI = (): FontSlotUI => ({
   tool: 'pencil',
   overlayGlyphId: null,
   showGrid: true,
+  cursor: null,
+  selectionRect: null,
+  showMetricsHud: false,
 });
 
 export const useStore = create<AppStore>((set, get) => ({
@@ -388,6 +398,14 @@ export const useStore = create<AppStore>((set, get) => ({
     set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], overlayGlyphId: id } } })),
   toggleGridLines: (slot) =>
     set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showGrid: !s.ui[slot].showGrid } } })),
+  setCursor: (slot, cursor) =>
+    set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], cursor } } })),
+  setSelectionRect: (slot, rect) =>
+    set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], selectionRect: rect } } })),
+  toggleMetricsHud: (slot) =>
+    set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showMetricsHud: !s.ui[slot].showMetricsHud } } })),
+  setMetricsHud: (slot, show) =>
+    set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showMetricsHud: show } } })),
 }));
 
 // ---------------------------------------------------------------------------

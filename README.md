@@ -27,6 +27,9 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | Persistence | Project files (`.pixeel.json`) with both fonts + metadata + grids + settings; automatic IndexedDB recovery snapshot restored after refresh |
 | Export correctness | Real `glyf` TrueType outlines with correct cmap, metrics, names, bboxes and checksums; re-parse validation of every export; explicit report of preserved vs dropped tables |
 | Version display | The app version and the **name, version and author of the selected font** are always visible in the header and status bar |
+| Command palette | **Ctrl/Cmd+K** fuzzy search over 20+ actions (new font, export, dialogs, undo/redo, switch font, theme, grid toggle, etc.) + **glyph jump** by character or U+ code (e.g. `A`, `U+10D0`) |
+| Metrics HUD | Toggle with **H** — overlay shows advance width, LSB/RSB, bbox, pixel count, grid size, cursor, selection, zoom; enhanced status bar shows cursor (x,y), selection (w×h), advance, bearings, zoom, grid state |
+| Onboarding & help | First-run **onboarding checklist** (stored in localStorage, dismissable); **searchable help dialog** with all shortcuts grouped by category; tooltips on every primary toolbar button |
 
 ## Using fonts with ESPHome
 
@@ -152,7 +155,7 @@ npm run dev          # http://localhost:5173
 ### Tests
 
 ```bash
-npm test             # 147 unit/integration tests (vitest)
+npm test             # 168 unit/integration tests (vitest)
 npm run verify:pages # builds with a subpath base and serves it under /test-repo/
 ```
 
@@ -290,18 +293,22 @@ it instead. **Shift+arrows** shift the whole bitmap by one pixel.
 
 | Key | Action |
 | --- | --- |
+| `Ctrl/Cmd+K` | Open **command palette** — fuzzy search actions + glyph jump (type `A` or `U+10D0`) |
 | Arrow keys | Move the cursor (nudge the selection when one is active) |
 | Shift + arrows | Shift the bitmap one pixel |
 | `Space` / `Enter` | Act at the cursor with the current tool |
 | `Shift` + `Space` | Erase at the cursor |
 | `T` | Toggle the pixel under the cursor |
 | `B`/`P` pencil · `E` eraser · `F` fill · `L` line · `R` rectangle · `M`/`S` select | Tools |
+| `G` | Toggle grid lines |
+| `H` | Toggle **metrics HUD** overlay (advance, bearings, bbox, pixel count, cursor, selection) |
+| `I` invert · `+` / `−` zoom | Edit / view |
 | `Ctrl+A` | Select all |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | Copy / cut / paste (paste lands at the cursor) |
 | `Ctrl+Z` / `Ctrl+Y` | Undo / redo (one step per edit) |
+| `Ctrl+S` | Save project |
 | `Esc` | Place a floating selection, or cancel an in-progress stroke |
 | `Delete` / `Backspace` | Delete a floating selection, or clear the grid |
-| `I` invert · `G` grid lines · `+` / `−` zoom · `Ctrl+S` save project | |
 
 Mouse: the left button paints with the current tool; **right-drag erases**. Hovering
 shows the pixel's column (from the left) and row (from the top) in the status line.

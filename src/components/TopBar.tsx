@@ -14,6 +14,7 @@ import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined';
 import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
 import HelpOutlineIcon from '@mui/icons-material/Help';
 import GridOnIcon from '@mui/icons-material/GridOn';
+import SearchIcon from '@mui/icons-material/Search';
 import { useStore, workspaceName } from '../state/store';
 import type { Slot } from '../core/types';
 import { importFontFile, openProjectFile, saveProjectFile } from '../services/fileActions';
@@ -126,7 +127,8 @@ function MenuButton(props: { label: string; icon: React.ReactNode; children: (cl
   );
 }
 
-export function TopBar() {
+export function TopBar(props: { onOpenPalette?: () => void }) {
+  const onOpenPalette = props.onOpenPalette;
   const fonts = useStore((s) => s.fonts);
   const active = useStore((s) => s.active);
   const theme = useStore((s) => s.theme);
@@ -216,6 +218,11 @@ export function TopBar() {
         <Tooltip title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>
           <IconButton aria-label="Toggle theme" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? <LightModeOutlinedIcon /> : <DarkModeOutlinedIcon />}
+          </IconButton>
+        </Tooltip>
+        <Tooltip title="Command palette (Ctrl+K)">
+          <IconButton aria-label="Command palette" onClick={() => onOpenPalette?.()}>
+            <SearchIcon />
           </IconButton>
         </Tooltip>
         <Tooltip title="Help & keyboard shortcuts">

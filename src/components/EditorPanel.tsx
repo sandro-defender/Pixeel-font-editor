@@ -9,6 +9,7 @@ import { useStore } from '../state/store';
 import type { GlyphDoc, Slot } from '../core/types';
 import { PixelEditor } from './PixelEditor';
 import { OutlineEditor } from './OutlineEditor';
+import { MetricsHUD } from './MetricsHUD';
 import { flattenedGlyph } from '../core/fontCodec';
 import { initializePixelGrid } from '../state/glyphActions';
 import { checkLedFont, glyphLedIssues, ledLabel } from '../core/ledMatrix';
@@ -97,7 +98,8 @@ export function EditorPanel(props: { slot: Slot }) {
   }
 
   return (
-    <Box component="section" aria-label="Glyph editor" sx={{ flex: 1, minWidth: 0, p: 1.5, display: 'flex', flexDirection: 'column', gap: 1.5, overflow: 'auto' }}>
+    <Box component="section" aria-label="Glyph editor" sx={{ flex: 1, minWidth: 0, p: 1.5, display: 'flex', flexDirection: 'column', gap: 1.5, overflow: 'auto', position: 'relative' }}>
+      <MetricsHUD slot={slot} />
       <Stack direction="row" useFlexGap sx={{ alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
         <Typography variant="h5" component="h2" sx={{ fontWeight: 800, minWidth: 40, textAlign: 'center' }} aria-hidden>
           {glyph.unicode !== null ? String.fromCodePoint(glyph.unicode) : '—'}
