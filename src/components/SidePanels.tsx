@@ -138,8 +138,11 @@ export function MetricsPanel(props: { slot: Slot }) {
         {glyph.srcIndex !== null ? <span className="chip">source #{glyph.srcIndex}</span> : null}
       </div>
       <div className="row">
-        <Btn onClick={() => openModal({ type: 'transfer', from: slot, glyphIds: [glyph.id] })} tip="Copy this glyph to the other font">
+        <Btn onClick={() => openModal({ type: 'transfer', from: slot, glyphIds: [glyph.id], mode: 'copy' })} tip="Copy this glyph to the other font">
           Copy to {slot === 'A' ? 'Font B' : 'Font A'}…
+        </Btn>
+        <Btn onClick={() => openModal({ type: 'transfer', from: slot, glyphIds: [glyph.id], mode: 'move' })} tip="Move this glyph to the other font (removes it here; one undo restores both)">
+          Move to {slot === 'A' ? 'Font B' : 'Font A'}…
         </Btn>
       </div>
     </div>
@@ -278,7 +281,7 @@ export function ComparePanel() {
           <canvas ref={canvasA} style={{ width: 150, height: 150 }} />
           <div className="small muted">{glyphA ? `${glyphA.name} · adv ${glyphA.advanceWidth}` : 'missing'}</div>
           {glyphA && (
-            <Btn className="small" tip="Copy this glyph into Font B" onClick={() => openModal({ type: 'transfer', from: 'A', glyphIds: [glyphA.id] })}>
+            <Btn className="small" tip="Copy this glyph into Font B" onClick={() => openModal({ type: 'transfer', from: 'A', glyphIds: [glyphA.id], mode: 'copy' })}>
               A → B
             </Btn>
           )}
@@ -288,13 +291,13 @@ export function ComparePanel() {
           <canvas ref={canvasB} style={{ width: 150, height: 150 }} />
           <div className="small muted">{glyphB ? `${glyphB.name} · adv ${glyphB.advanceWidth}` : 'missing'}</div>
           {glyphB && (
-            <Btn className="small" tip="Copy this glyph into Font A" onClick={() => openModal({ type: 'transfer', from: 'B', glyphIds: [glyphB.id] })}>
+            <Btn className="small" tip="Copy this glyph into Font A" onClick={() => openModal({ type: 'transfer', from: 'B', glyphIds: [glyphB.id], mode: 'copy' })}>
               B → A
             </Btn>
           )}
         </div>
       </div>
-      <div className="hint">Aligns both glyphs on their baselines. Transfers are confirmed per-batch and undoable.</div>
+      <div className="hint">Aligns both glyphs on their baselines. Transfers are confirmed per batch and undoable; Move also removes the glyph from its source font.</div>
     </div>
   );
 }

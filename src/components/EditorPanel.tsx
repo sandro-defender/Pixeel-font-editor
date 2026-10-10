@@ -8,6 +8,7 @@ import { Btn } from './ui';
 import { flattenedGlyph } from '../core/fontCodec';
 import { rasterizeContours, defaultRasterizeFrame } from '../core/rasterize';
 import { initializePixelGrid } from '../state/glyphActions';
+import { checkLedFont, glyphLedIssues, ledLabel } from '../core/ledMatrix';
 
 export function EditorPanel(props: { slot: Slot }) {
   const { slot } = props;
@@ -25,6 +26,8 @@ export function EditorPanel(props: { slot: Slot }) {
 
   if (!doc) return null;
   const glyph = doc.glyphs.find((g) => g.id === ui.glyphId);
+  const ledCheck = doc.ledMatrix ? checkLedFont(doc) : null;
+  const ledErrors = glyph && ledCheck ? glyphLedIssues(ledCheck, glyph.id).filter((i) => i.severity === 'error') : [];
   if (!glyph) {
     return (
       <section className="editor-pane">
@@ -53,6 +56,7 @@ export function EditorPanel(props: { slot: Slot }) {
       <div className="editor-toolbar" style={{ borderBottom: 'none', paddingBottom: 0 }}>
         <strong>{glyph.unicode !== null ? String.fromCodePoint(glyph.unicode) : '—'} {glyph.name}</strong>
         <span className="chip">{glyph.kind}</span>
+        {doc.ledMatrix && <span className="chip led-chip" title="Exact-pixel LED matrix font">LED {ledLabel(doc.ledMatrix)}</span>}
         {glyph.edited && <span className="chip">edited</span>}
         <span className="spacer" />
         {glyph.pixel && (
@@ -70,15 +74,21 @@ export function EditorPanel(props: { slot: Slot }) {
             Flatten composite…
           </Btn>
         )}
-        {!glyph.pixel && (glyph.kind === 'vector' || glyph.kind === 'compound' || glyph.contours.length > 0) && (
+        {!doc.ledMatrix && !glyph.pixel && (glyph.kind === 'vector' || glyph.kind === 'compound' || glyph.contours.length > 0) && (
           <Btn tip="Rasterize this vector glyph into an editable pixel grid" onClick={() => openModal({ type: 'rasterize', slot, glyphId: glyph.id })}>
             Convert to pixels…
           </Btn>
         )}
       </div>
 
+      {doc.ledMatrix && ledErrors.length > 0 && (
+        <div className="warning-box small" role="status">
+          Not an exact LED pixel glyph yet: {ledErrors.slice(0, 2).map((i) => i.message).join(' ')}
+        </div>
+      )}
+
       {effectiveMode === 'pixel' && glyph.pixel ? (
-        <PixelEditor slot={slot} glyph={glyph} />
+        <PixelEditor key={glyph.id} slot={slot} glyph={glyph} />
       ) : effectiveMode === 'outline' && (glyph.contours.length > 0 || glyph.kind === 'vector') ? (
         <OutlineEditor slot={slot} glyph={glyph} />
       ) : (

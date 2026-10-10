@@ -24,6 +24,7 @@ import { EMPTY_META, deriveMetaFields } from './metadata';
 import { tracePixelData } from './trace';
 import { transformContours, contourBounds } from './contours';
 import { b64ToBytes } from './bitmap';
+import { checkLedFont, ledLabel } from './ledMatrix';
 
 export interface TtfLike {
   head: Record<string, unknown> & { unitsPerEm: number };
@@ -478,6 +479,17 @@ export function validateExport(buffer: ArrayBuffer, doc: FontDoc): ValidationRes
     push('Name table', family === doc.meta.fontFamily, `family "${family}" vs "${doc.meta.fontFamily}"`);
     const notdef = ttf.glyf[0];
     push('.notdef present', !!notdef, notdef ? 'first glyph exists' : 'missing .notdef');
+    if (doc.ledMatrix) {
+      const led = checkLedFont(doc, 3);
+      const firstErrors = led.issues.filter((i) => i.severity === 'error').slice(0, 3);
+      push(
+        'LED matrix (exact pixels)',
+        led.ok,
+        led.ok
+          ? `${ledLabel(doc.ledMatrix)} grid, ${doc.metrics.unitsPerEm / doc.ledMatrix.rows} units per pixel: every glyph is on the grid (${led.warnings} warning(s)).`
+          : `${led.errors} glyph/metric error(s). ${firstErrors.map((i) => `${i.glyph}: ${i.message}`).join(' ')}`,
+      );
+    }
   } catch (err) {
     push('Parse', false, `Exported font failed to re-parse: ${err instanceof Error ? err.message : String(err)}`);
   }

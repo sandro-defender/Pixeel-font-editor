@@ -1,12 +1,13 @@
 /** Document mutators — pure functions returning a new FontDoc. */
-import type { Contour, FontDoc, GlyphDoc, PixelData } from '../core/types';
+import type { Contour, FontDoc, GlyphDoc, LedMatrixSpec, PixelData } from '../core/types';
 import { makeId } from '../core/types';
-import { emptyGlyphDoc } from '../core/fontCodec';
+import { emptyGlyphDoc, resolveGlyphContours } from '../core/fontCodec';
 import { resizedPixelData } from '../core/fontFactory';
-import { bytesToB64 } from '../core/bitmap';
+import { Bitmap, bytesToB64 } from '../core/bitmap';
 import { suggestGlyphName } from '../core/unicodeNames';
 import { validateUnicodeAssignment } from '../core/transfer';
 import { contourBounds } from '../core/contours';
+import { conformGlyphToLed, ledAdvance, ledMetrics, normalizeLedSpec } from '../core/ledMatrix';
 
 export function withGlyph(doc: FontDoc, glyphId: string, next: GlyphDoc): FontDoc {
   return { ...doc, glyphs: doc.glyphs.map((g) => (g.id === glyphId ? next : g)) };
@@ -118,8 +119,65 @@ export function setLeftSideBearing(doc: FontDoc, glyphId: string, lsb: number): 
 export function resizeGrid(doc: FontDoc, glyphId: string, width: number, height: number, mode: 'crop' | 'center' | 'resample'): FontDoc {
   const g = doc.glyphs.find((x) => x.id === glyphId);
   if (!g?.pixel) throw new Error('Glyph has no pixel grid.');
+  if (doc.ledMatrix && height !== doc.ledMatrix.rows) {
+    throw new Error(`LED matrix fonts are ${doc.ledMatrix.rows} pixels tall; only the width can change.`);
+  }
   const pixel = resizedPixelData(g.pixel, width, height, mode);
-  return withGlyphMap(doc, glyphId, (gl) => ({ ...gl, pixel, edited: true }));
+  return withGlyphMap(doc, glyphId, (gl) => ({
+    ...gl,
+    pixel,
+    // LED glyphs advance by their own width plus the matrix letter spacing.
+    advanceWidth: doc.ledMatrix ? ledAdvance(doc.ledMatrix, width) : gl.advanceWidth,
+    edited: true,
+  }));
+}
+
+/** Contours of a glyph in its own font (composites flattened). */
+function contoursIn(doc: FontDoc): (g: GlyphDoc) => Contour[] {
+  return (g) => resolveGlyphContours(g, doc.glyphs);
+}
+
+/**
+ * Turn a font into an LED matrix (exact-pixel) font, or switch LED mode off
+ * (`null` keeps all glyph data and metrics as they are).
+ * Turning it on snaps every glyph to the matrix: pixel grids are re-anchored,
+ * vector outlines are rasterized and metrics become whole pixels.
+ */
+export function applyLedMatrix(doc: FontDoc, spec: LedMatrixSpec | null): FontDoc {
+  if (!spec) return { ...doc, ledMatrix: null };
+  const s = normalizeLedSpec(spec);
+  const contoursOf = contoursIn(doc);
+  const glyphs = doc.glyphs.map((g) => (g.name === '.notdef' ? g : conformGlyphToLed(g, s, contoursOf)));
+  return { ...doc, ledMatrix: s, metrics: ledMetrics(s), glyphs };
+}
+
+/** Snap a single glyph onto the font's LED matrix (rasterizes vector outlines). */
+export function snapGlyphToLed(doc: FontDoc, glyphId: string): FontDoc {
+  if (!doc.ledMatrix) throw new Error('This font is not an LED matrix font.');
+  const spec = doc.ledMatrix;
+  const contoursOf = contoursIn(doc);
+  return withGlyphMap(doc, glyphId, (g) => (g.name === '.notdef' ? g : conformGlyphToLed(g, spec, contoursOf)));
+}
+
+/**
+ * Replace a pixel glyph's bitmap (text / column-byte entry). The glyph keeps its
+ * grid placement; LED fonts also get the matching whole-pixel advance.
+ */
+export function setGlyphBitmap(doc: FontDoc, glyphId: string, bm: Bitmap): FontDoc {
+  const target = doc.glyphs.find((g) => g.id === glyphId);
+  if (!target) throw new Error('Glyph not found.');
+  if (!target.pixel) throw new Error('This glyph has no pixel grid.');
+  if (doc.ledMatrix && bm.height !== doc.ledMatrix.rows) {
+    throw new Error(`LED matrix fonts are ${doc.ledMatrix.rows} pixels tall.`);
+  }
+  return withGlyphMap(doc, glyphId, (g) => ({
+    ...g,
+    pixel: { ...g.pixel!, width: bm.width, height: bm.height, cellsB64: bm.toB64() },
+    advanceWidth: doc.ledMatrix ? ledAdvance(doc.ledMatrix, bm.width) : g.advanceWidth,
+    kind: 'pixel',
+    instructions: null,
+    edited: true,
+  }));
 }
 
 /** Recompute LSB from contour bbox (used after outline edits move points). */
@@ -169,7 +227,12 @@ export function initializePixelGrid(doc: FontDoc, glyphId: string): FontDoc {
 
 export function makeEmptyGlyph(doc: FontDoc, unicode: number | null, name?: string): GlyphDoc {
   const template = doc.glyphs.find((g) => g.pixel)?.pixel;
-  const g = emptyGlyphDoc(name || suggestGlyphName(unicode, doc.glyphs.length) || 'glyph', template ? template.width * template.unitsPerCell : Math.round(doc.metrics.unitsPerEm / 2));
+  const advance = template
+    ? doc.ledMatrix
+      ? ledAdvance(doc.ledMatrix, template.width)
+      : template.width * template.unitsPerCell
+    : Math.round(doc.metrics.unitsPerEm / 2);
+  const g = emptyGlyphDoc(name || suggestGlyphName(unicode, doc.glyphs.length) || 'glyph', advance);
   g.unicode = unicode;
   if (template) {
     g.pixel = { ...template, cellsB64: bytesToB64(new Uint8Array(template.width * template.height)) };

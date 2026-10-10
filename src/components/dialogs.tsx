@@ -1,9 +1,24 @@
 /** All modal dialogs: new font, add glyph, metadata+license, export, transfer, resize, rasterize, help. */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useStore } from '../state/store';
-import type { FontDoc, FontMeta, Slot } from '../core/types';
+import { useStore, type TransferMode } from '../state/store';
+import type { FontDoc, FontMeta, LedMatrixSpec, Slot } from '../core/types';
 import { createNewFont, computePixelLayout } from '../core/fontFactory';
-import { makeEmptyGlyph } from '../state/glyphActions';
+import { applyLedMatrix, makeEmptyGlyph, resizeGrid, setGlyphBitmap } from '../state/glyphActions';
+import {
+  DEFAULT_LED_CELL_UNITS,
+  LED_MAX_ROWS,
+  LED_PRESETS,
+  asciiToBitmap,
+  bitmapToAscii,
+  bitmapToColumnHex,
+  checkLedFont,
+  columnBytesToBitmap,
+  glyphLedIssues,
+  ledLabel,
+  normalizeLedSpec,
+  bytesPerColumn,
+  defaultLedSpec,
+} from '../core/ledMatrix';
 import { parseCodePointInput, describeCodePoint, isValidCodePoint } from '../core/unicodeNames';
 import { validateMeta, deriveMetaFields } from '../core/metadata';
 import { applyLicense, buildLicenseTxt, LICENSING_DISCLAIMER, type LicenseMode } from '../core/license';
@@ -11,7 +26,7 @@ import { buildOFLLicense, OFL_VERSION_NOTE } from '../core/oflText';
 import { exportFont } from '../services/exportService';
 import { DEFAULT_EXPORT_OPTIONS, type ExportReport } from '../core/fontCodec';
 import { downloadArrayBuffer, downloadBlob } from '../services/persistence';
-import { findConflicts, transferGlyphs, type CollisionStrategy, type MetricsMode } from '../core/transfer';
+import { findConflicts, sourceAfterMove, transferGlyphs, type CollisionStrategy, type MetricsMode } from '../core/transfer';
 import { getSource } from '../core/sourceRegistry';
 import { registerImportedSource } from '../services/persistence';
 import { rasterizeContours, defaultRasterizeFrame } from '../core/rasterize';
@@ -30,11 +45,51 @@ export function NewFontDialog() {
 
   const [family, setFamily] = useState('My Pixel Font');
   const [style, setStyle] = useState('Regular');
+  const [kind, setKind] = useState<'standard' | 'led'>('standard');
   const [preset, setPreset] = useState<'8' | '16' | '32' | 'custom'>('16');
   const [cw, setCw] = useState(16);
   const [ch, setCh] = useState(16);
+  // LED matrix options
+  const [ledPreset, setLedPreset] = useState<string>('5x7');
+  const [ledCols, setLedCols] = useState(5);
+  const [ledRows, setLedRows] = useState(7);
+  const [ledSpacing, setLedSpacing] = useState(1);
+  const [ledCell, setLedCell] = useState(DEFAULT_LED_CELL_UNITS);
+  const [ledBelow, setLedBelow] = useState(0);
+
+  const applyLedPreset = (id: string) => {
+    setLedPreset(id);
+    const p = LED_PRESETS.find((x) => x.id === id);
+    if (p) {
+      setLedCols(p.cols);
+      setLedRows(p.rows);
+      setLedBelow(0);
+    }
+  };
+
+  const ledInput = { rows: ledRows, cols: ledCols, spacing: ledSpacing, cellUnits: ledCell, descentRows: ledBelow };
+  let ledError: string | null = null;
+  let ledSpec: LedMatrixSpec | null = null;
+  try {
+    ledSpec = normalizeLedSpec(ledInput);
+  } catch (err) {
+    ledError = err instanceof Error ? err.message : String(err);
+  }
 
   const create = () => {
+    if (kind === 'led') {
+      if (!ledSpec) {
+        toast('error', ledError ?? 'Check the LED matrix settings.');
+        return;
+      }
+      const doc = createNewFont({ familyName: family, styleName: style, gridWidth: ledSpec.cols, gridHeight: ledSpec.rows, led: ledSpec });
+      const slot: Slot = fonts.A === null ? 'A' : fonts.B === null ? 'B' : useStore.getState().active;
+      loadFont(slot, doc, `${doc.meta.postScriptName}.pixeel`);
+      setActive(slot);
+      toast('success', `Created LED matrix font “${family}” (${ledSpec.cols}×${ledSpec.rows}) in Font ${slot}.`);
+      closeModal();
+      return;
+    }
     const w = preset === 'custom' ? cw : Number(preset);
     const h = preset === 'custom' ? ch : Number(preset);
     if (w < 2 || h < 2 || w > 128 || h > 128) {
@@ -45,12 +100,12 @@ export function NewFontDialog() {
     const slot: Slot = fonts.A === null ? 'A' : fonts.B === null ? 'B' : useStore.getState().active;
     loadFont(slot, doc, `${doc.meta.postScriptName}.pixeel`);
     setActive(slot);
-    toast('success', `Created "${family}" in Font ${slot}.`);
+    toast('success', `Created \"${family}\" in Font ${slot}.`);
     closeModal();
   };
 
   return (
-    <ModalShell title="Create a new pixel font" onClose={closeModal}>
+    <ModalShell title="Create a new pixel font" onClose={closeModal} wide>
       <div className="grid2">
         <Field label="Family name">
           <input value={family} onChange={(e) => setFamily(e.target.value)} />
@@ -59,36 +114,93 @@ export function NewFontDialog() {
           <input value={style} onChange={(e) => setStyle(e.target.value)} />
         </Field>
       </div>
-      <Field label="Pixel grid size" hint="Each glyph starts as a grid of this size. Grids can be resized per glyph later.">
+      <Field label="Font type" hint="Standard: free-form pixel grids. LED matrix: every glyph is exactly on one fixed pixel grid (for LED panels, displays and bitmap-style text).">
         <SegBtns
-          value={preset}
+          ariaLabel="Font type"
+          value={kind}
           options={[
-            { v: '8', label: '8 × 8' },
-            { v: '16', label: '16 × 16' },
-            { v: '32', label: '32 × 32' },
-            { v: 'custom', label: 'Custom…' },
+            { v: 'standard', label: 'Standard pixel font', tip: 'Free-form pixel grids (default)' },
+            { v: 'led', label: 'LED matrix font (exact pixels)', tip: 'Fixed-height pixel grid with whole-pixel metrics' },
           ]}
-          onChange={setPreset}
-          ariaLabel="Grid preset"
+          onChange={setKind}
         />
       </Field>
-      {preset === 'custom' && (
-        <div className="grid2">
-          <Field label="Grid width (2–128)">
-            <input type="number" min={2} max={128} value={cw} onChange={(e) => setCw(Number(e.target.value))} />
+
+      {kind === 'standard' && (
+        <>
+          <Field label="Pixel grid size" hint="Each glyph starts as a grid of this size. Grids can be resized per glyph later.">
+            <SegBtns
+              value={preset}
+              options={[
+                { v: '8', label: '8 × 8' },
+                { v: '16', label: '16 × 16' },
+                { v: '32', label: '32 × 32' },
+                { v: 'custom', label: 'Custom…' },
+              ]}
+              onChange={setPreset}
+              ariaLabel="Grid preset"
+            />
           </Field>
-          <Field label="Grid height (2–128)">
-            <input type="number" min={2} max={128} value={ch} onChange={(e) => setCh(Number(e.target.value))} />
-          </Field>
+          {preset === 'custom' && (
+            <div className="grid2">
+              <Field label="Grid width (2–128)">
+                <input type="number" min={2} max={128} value={cw} onChange={(e) => setCw(Number(e.target.value))} />
+              </Field>
+              <Field label="Grid height (2–128)">
+                <input type="number" min={2} max={128} value={ch} onChange={(e) => setCh(Number(e.target.value))} />
+              </Field>
+            </div>
+          )}
+          <div className="hint">
+            The grid spans one em: with height {preset === 'custom' ? ch : preset} cells the em square becomes{' '}
+            {computePixelLayout(preset === 'custom' ? cw : Number(preset), preset === 'custom' ? ch : Number(preset)).unitsPerEm} units, baseline ~20% from the bottom.
+          </div>
+        </>
+      )}
+
+      {kind === 'led' && (
+        <div className="panel-section">
+          <h3>LED matrix</h3>
+          <div className="grid2">
+            <Field label="Preset">
+              <select value={ledPreset} onChange={(e) => applyLedPreset(e.target.value)} aria-label="LED matrix preset">
+                {LED_PRESETS.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+                <option value="custom">Custom…</option>
+              </select>
+            </Field>
+            <Field label="Units per LED pixel" hint="Each lit pixel is exactly this many font units square.">
+              <input type="number" min={1} value={ledCell} onChange={(e) => setLedCell(Number(e.target.value))} aria-label="Units per LED pixel" />
+            </Field>
+            <Field label="Matrix height (rows)" hint="Every glyph is this tall">
+              <input type="number" min={1} max={LED_MAX_ROWS} value={ledRows} onChange={(e) => { setLedPreset('custom'); setLedRows(Number(e.target.value)); }} aria-label="Matrix height" />
+            </Field>
+            <Field label="Default width (columns)" hint="Glyph width; can vary per glyph">
+              <input type="number" min={1} max={LED_MAX_ROWS} value={ledCols} onChange={(e) => { setLedPreset('custom'); setLedCols(Number(e.target.value)); }} aria-label="Default width" />
+            </Field>
+            <Field label="Letter spacing (px)" hint="Blank pixel columns after each glyph">
+              <input type="number" min={0} max={32} value={ledSpacing} onChange={(e) => setLedSpacing(Number(e.target.value))} aria-label="Letter spacing" />
+            </Field>
+            <Field label="Rows below baseline" hint="0 = no descenders">
+              <input type="number" min={0} value={ledBelow} onChange={(e) => setLedBelow(Number(e.target.value))} aria-label="Rows below baseline" />
+            </Field>
+          </div>
+          {ledError ? (
+            <div className="error-box">{ledError}</div>
+          ) : (
+            <div className="hint">
+              Font size: {ledSpec!.rows * ledSpec!.cellUnits} units per em ({ledSpec!.rows} × {ledSpec!.cellUnits}). Glyph advance = (width + {ledSpec!.spacing}) × {ledSpec!.cellUnits}.
+            </div>
+          )}
         </div>
       )}
-      <div className="hint">
-        The grid spans one em: with height {preset === 'custom' ? ch : preset} cells the em square becomes{' '}
-        {computePixelLayout(preset === 'custom' ? cw : Number(preset), preset === 'custom' ? ch : Number(preset)).unitsPerEm} units, baseline ~20% from the bottom.
-      </div>
+
       <div className="modal-actions">
         <Btn onClick={closeModal}>Cancel</Btn>
-        <Btn kind="primary" onClick={create}>Create font</Btn>
+        <Btn kind="primary" onClick={create} disabled={kind === 'led' && !!ledError}>
+          Create font
+        </Btn>
       </div>
     </ModalShell>
   );
@@ -200,7 +312,8 @@ export function MetadataDialog(props: { slot: Slot }) {
     commit(props.slot, 'Edit metadata', (d) => ({
       ...d,
       meta: licensed,
-      metrics: { ...metrics, unitsPerEm: Math.round(metrics.unitsPerEm), ascent: Math.round(metrics.ascent), descent: Math.round(metrics.descent), lineGap: Math.round(metrics.lineGap) },
+      // LED matrix fonts derive their vertical metrics from the grid, so they stay locked
+      metrics: doc.ledMatrix ? doc.metrics : { ...metrics, unitsPerEm: Math.round(metrics.unitsPerEm), ascent: Math.round(metrics.ascent), descent: Math.round(metrics.descent), lineGap: Math.round(metrics.lineGap) },
     }));
     toast('success', 'Font metadata updated.');
     closeModal();
@@ -222,18 +335,21 @@ export function MetadataDialog(props: { slot: Slot }) {
 
       <div className="panel-section">
         <h3>Global metrics</h3>
+        {doc.ledMatrix && (
+          <div className="hint">LED matrix font: metrics are set by the matrix (rows × units per pixel). Change them in “LED matrix…”.</div>
+        )}
         <div className="grid2">
           <Field label="Units per em" hint="Changing this rescales nothing — edit with care on imported fonts.">
-            <input type="number" value={metrics.unitsPerEm} onChange={(e) => setMetrics({ ...metrics, unitsPerEm: Number(e.target.value) })} />
+            <input type="number" disabled={!!doc.ledMatrix} value={metrics.unitsPerEm} onChange={(e) => setMetrics({ ...metrics, unitsPerEm: Number(e.target.value) })} />
           </Field>
           <Field label="Line gap">
-            <input type="number" value={metrics.lineGap} onChange={(e) => setMetrics({ ...metrics, lineGap: Number(e.target.value) })} />
+            <input type="number" disabled={!!doc.ledMatrix} value={metrics.lineGap} onChange={(e) => setMetrics({ ...metrics, lineGap: Number(e.target.value) })} />
           </Field>
           <Field label="Ascent (positive)">
-            <input type="number" value={metrics.ascent} onChange={(e) => setMetrics({ ...metrics, ascent: Number(e.target.value) })} />
+            <input type="number" disabled={!!doc.ledMatrix} value={metrics.ascent} onChange={(e) => setMetrics({ ...metrics, ascent: Number(e.target.value) })} />
           </Field>
           <Field label="Descent (negative)">
-            <input type="number" value={metrics.descent} onChange={(e) => setMetrics({ ...metrics, descent: Number(e.target.value) })} />
+            <input type="number" disabled={!!doc.ledMatrix} value={metrics.descent} onChange={(e) => setMetrics({ ...metrics, descent: Number(e.target.value) })} />
           </Field>
         </div>
       </div>
@@ -436,15 +552,16 @@ export function ExportDialog(props: { slot: Slot }) {
 // ---------------------------------------------------------------------------
 // Transfer between fonts
 // ---------------------------------------------------------------------------
-export function TransferDialog(props: { from: Slot; glyphIds: string[] }) {
+export function TransferDialog(props: { from: Slot; glyphIds: string[]; mode?: TransferMode }) {
   const closeModal = useStore((s) => s.closeModal);
-  const commit = useStore((s) => s.commit);
-  const loadFont = useStore((s) => s.loadFont);
+  const commitLinked = useStore((s) => s.commitLinked);
+  const setMultiSelect = useStore((s) => s.setMultiSelect);
   const toast = useStore((s) => s.toast);
   const srcDoc = useStore((s) => s.fonts[props.from])!;
   const to: Slot = props.from === 'A' ? 'B' : 'A';
   const dstDoc = useStore((s) => s.fonts[to]);
 
+  const [mode, setMode] = useState<TransferMode>(props.mode ?? 'copy');
   const [metricsMode, setMetricsMode] = useState<MetricsMode>('preserve');
   const [scaleUpm, setScaleUpm] = useState(true);
   const [collision, setCollision] = useState<CollisionStrategy>('replace');
@@ -454,6 +571,7 @@ export function TransferDialog(props: { from: Slot; glyphIds: string[] }) {
 
   const glyphs = srcDoc.glyphs.filter((g) => props.glyphIds.includes(g.id));
   const conflicts = useMemo(() => (dstDoc ? findConflicts(srcDoc, dstDoc, props.glyphIds) : []), [srcDoc, dstDoc, props.glyphIds]);
+  const toLed = !!dstDoc?.ledMatrix;
 
   if (!dstDoc) {
     return (
@@ -466,12 +584,19 @@ export function TransferDialog(props: { from: Slot; glyphIds: string[] }) {
 
   const perGlyphStrategy = (id: string): CollisionStrategy => conflictResolution[id] ?? collision;
 
-  // transferGlyphs needs a src doc snapshot (unchanged during this dialog)
-  const srcDocForTransfer = srcDoc;
-  let lastResult = { copied: 0, skipped: 0, replaced: 0, reassigned: 0, flattenedComposites: 0 };
-  let lastNotes: string[] = [];
+  type Summary = {
+    doc: FontDoc;
+    copied: number;
+    skipped: number;
+    replaced: number;
+    reassigned: number;
+    flattenedComposites: number;
+    notes: string[];
+    copiedSourceIds: string[];
+  };
 
-  const apply = () => {
+  /** Runs the transfer against the destination doc (called inside the undoable commit). */
+  const runTransfer = (dst: FontDoc): Summary => {
     // group by strategy since transferGlyphs takes one strategy per call
     const groups = new Map<CollisionStrategy, string[]>();
     for (const g of glyphs) {
@@ -483,38 +608,83 @@ export function TransferDialog(props: { from: Slot; glyphIds: string[] }) {
     for (const [id, raw] of Object.entries(reassign)) {
       reassignments[id] = raw.trim() === '' ? null : parseCodePointInput(raw);
     }
+    let next = dst;
+    const total: Summary = { doc: dst, copied: 0, skipped: 0, replaced: 0, reassigned: 0, flattenedComposites: 0, notes: [], copiedSourceIds: [] };
+    for (const [strat, ids] of groups) {
+      if (!ids.length) continue;
+      const res = transferGlyphs(srcDoc, next, ids, { metricsMode, scaleByUpm: scaleUpm, collision: strat, reassignments });
+      next = res.doc;
+      total.copied += res.copied;
+      total.skipped += res.skipped;
+      total.replaced += res.replaced;
+      total.reassigned += res.reassigned;
+      total.flattenedComposites += res.flattenedComposites;
+      total.notes.push(...res.notes);
+      total.copiedSourceIds.push(...res.copiedSourceIds);
+    }
+    total.doc = next;
+    return total;
+  };
 
-    commit(to, 'Transfer glyphs', (dst) => {
-      let next = dst;
-      let totals = { copied: 0, skipped: 0, replaced: 0, reassigned: 0, flattenedComposites: 0 };
-      const notes: string[] = [];
-      for (const [strat, ids] of groups) {
-        if (!ids.length) continue;
-        const res = transferGlyphs(srcDocForTransfer, next, ids, { metricsMode, scaleByUpm: scaleUpm, collision: strat, reassignments });
-        next = res.doc;
-        totals = {
-          copied: totals.copied + res.copied,
-          skipped: totals.skipped + res.skipped,
-          replaced: totals.replaced + res.replaced,
-          reassigned: totals.reassigned + res.reassigned,
-          flattenedComposites: totals.flattenedComposites + res.flattenedComposites,
-        };
-        notes.push(...res.notes);
-      }
-      lastResult = totals;
-      lastNotes = notes;
-      return next;
-    });
-    toast('success', `Transfer complete: ${lastResult.copied} copied, ${lastResult.replaced} replaced, ${lastResult.reassigned} reassigned, ${lastResult.skipped} skipped.${lastResult.flattenedComposites ? ` ${lastResult.flattenedComposites} composite(s) flattened.` : ''} Undo with Ctrl+Z in Font ${to}.`);
-    lastNotes.forEach((n) => toast('warning', n));
+  const apply = () => {
+    let summary: Summary | null = null;
+    const edits: Array<{ slot: Slot; updater: (d: FontDoc) => FontDoc }> = [
+      {
+        slot: to,
+        updater: (d) => {
+          summary = runTransfer(d);
+          return summary.doc;
+        },
+      },
+    ];
+    if (mode === 'move') {
+      // removal uses the ids that were really copied; skipped glyphs stay in the source
+      edits.push({ slot: props.from, updater: (d) => sourceAfterMove(d, (summary as Summary | null)?.copiedSourceIds ?? []) });
+    }
+    const ok = commitLinked(mode === 'move' ? 'Move glyphs' : 'Copy glyphs', edits);
+    const res = summary as Summary | null;
+    if (!ok || !res) {
+      toast('warning', 'Nothing was transferred.');
+      closeModal();
+      return;
+    }
+    if (mode === 'move') setMultiSelect(props.from, []);
+    const verb = mode === 'move' ? 'moved' : 'copied';
+    toast(
+      'success',
+      `Transfer complete: ${res.copied} ${verb}, ${res.replaced} replaced, ${res.reassigned} reassigned, ${res.skipped} skipped.` +
+        (res.flattenedComposites ? ` ${res.flattenedComposites} composite(s) flattened.` : '') +
+        ` Undo with Ctrl+Z restores ${mode === 'move' ? `Font ${props.from} and Font ${to}` : `Font ${to}`}.`,
+    );
+    res.notes.forEach((n) => toast('warning', n));
     closeModal();
   };
 
   return (
-    <ModalShell title={`Copy ${glyphs.length} glyph(s): Font ${props.from} → Font ${to}`} onClose={closeModal} wide>
+    <ModalShell title={`${mode === 'move' ? 'Move' : 'Copy'} ${glyphs.length} glyph(s): Font ${props.from} → Font ${to}`} onClose={closeModal} wide>
       <div className="hint">
         Source “{srcDoc.meta.fontFamily}” (upm {srcDoc.metrics.unitsPerEm}) → Destination “{dstDoc.meta.fontFamily}” (upm {dstDoc.metrics.unitsPerEm}).
         Glyphs are matched by identity, never by glyph index.
+      </div>
+      <div className="panel-section">
+        <h3>What happens to the glyphs</h3>
+        <SegBtns
+          ariaLabel="Transfer mode"
+          value={mode}
+          options={[
+            { v: 'copy', label: 'Copy', tip: 'Keep the glyphs in both fonts' },
+            { v: 'move', label: 'Move', tip: `Copy into Font ${to}, then remove them from Font ${props.from}` },
+          ]}
+          onChange={(m) => {
+            setMode(m);
+            setConfirmStep(false);
+          }}
+        />
+        {mode === 'move' && (
+          <div className="hint">
+            Moved glyphs are removed from Font {props.from}. “.notdef” always stays. Glyphs skipped because of a collision stay in Font {props.from}. One undo restores both fonts.
+          </div>
+        )}
       </div>
       <div className="panel-section">
         <h3>Options</h3>
@@ -533,7 +703,15 @@ export function TransferDialog(props: { from: Slot; glyphIds: string[] }) {
           onChange={setScaleUpm}
           tip="Scales outlines and metrics so the glyph keeps its relative size in the destination font"
         />
-        <div className="hint">Copied glyphs align on the destination baseline; pixel grids keep their cell layout (only their cell size in units is scaled).</div>
+        <div className="hint">
+          Copied glyphs align on the destination baseline; pixel grids keep their cell layout (only their cell size in units is scaled).
+          {toLed && (
+            <>
+              {' '}
+              <strong>Font {to} is an LED matrix font:</strong> glyphs are snapped onto its exact pixel grid (vector outlines are rasterized) and metrics become whole pixels.
+            </>
+          )}
+        </div>
       </div>
 
       {conflicts.length > 0 && (
@@ -580,7 +758,7 @@ export function TransferDialog(props: { from: Slot; glyphIds: string[] }) {
       )}
 
       <div className="panel-section">
-        <h3>Glyphs to copy</h3>
+        <h3>Glyphs to {mode === 'move' ? 'move' : 'copy'}</h3>
         <div className="row">
           {glyphs.slice(0, 40).map((g) => (
             <span key={g.id} className="chip" title={g.name}>
@@ -599,13 +777,15 @@ export function TransferDialog(props: { from: Slot; glyphIds: string[] }) {
       ) : (
         <>
           <div className="warning-box">
-            This will {metricsMode === 'preserve' ? 'preserve source metrics' : 'adapt metrics to the destination'}
+            This will {mode === 'move' ? `move glyphs from Font ${props.from} into Font ${to}` : `copy glyphs into Font ${to}`}, {metricsMode === 'preserve' ? 'preserve source metrics' : 'adapt metrics to the destination'}
             {scaleUpm ? ', scale proportionally to units-per-em' : ''}, and resolve collisions by “{conflicts.length ? 'per-glyph choices above' : collision}”.
-            The operation is a single undo step in Font {to}.
+            {mode === 'move' ? ' Undo (Ctrl+Z) restores both fonts in one step.' : ` The operation is a single undo step in Font ${to}.`}
           </div>
           <div className="modal-actions">
             <Btn onClick={() => setConfirmStep(false)}>← Back</Btn>
-            <Btn kind="primary" onClick={apply}>Copy {glyphs.length} glyph(s) into Font {to}</Btn>
+            <Btn kind="primary" onClick={apply}>
+              {mode === 'move' ? `Move ${glyphs.length} glyph(s)` : `Copy ${glyphs.length} glyph(s)`} into Font {to}
+            </Btn>
           </div>
         </>
       )}
@@ -623,8 +803,9 @@ export function ResizeGridDialog(props: { slot: Slot; glyphId: string }) {
   const doc = useStore((s) => s.fonts[props.slot])!;
   const glyph = doc.glyphs.find((g) => g.id === props.glyphId)!;
   const pixel = glyph.pixel!;
+  const led = doc.ledMatrix ?? null;
   const [w, setW] = useState(pixel.width);
-  const [h, setH] = useState(pixel.height);
+  const [h, setH] = useState(led ? led.rows : pixel.height);
   const [mode, setMode] = useState<'crop' | 'center' | 'resample'>('crop');
 
   const apply = () => {
@@ -632,21 +813,26 @@ export function ResizeGridDialog(props: { slot: Slot; glyphId: string }) {
       toast('error', 'Grid size must be 1–128.');
       return;
     }
-    commit(props.slot, 'Resize grid', (d) => {
-      const g = d.glyphs.find((x) => x.id === props.glyphId)!;
-      const bm = Bitmap.fromB64(g.pixel!.width, g.pixel!.height, g.pixel!.cellsB64).resized(w, h, mode);
-      return { ...d, glyphs: d.glyphs.map((x) => (x.id === g.id ? { ...x, pixel: { ...x.pixel!, width: w, height: h, cellsB64: bm.toB64() }, edited: true } : x)) };
-    });
+    commit(props.slot, 'Resize grid', (d) => resizeGrid(d, props.glyphId, w, h, mode));
     toast('success', `Grid resized to ${w}×${h} (${mode === 'crop' ? 'crop/pad bottom-left' : mode === 'center' ? 'crop/pad centered' : 'nearest-neighbour resample'}).`);
     closeModal();
   };
 
   return (
     <ModalShell title={`Resize pixel grid — ${glyph.name}`} onClose={closeModal}>
-      <div className="hint">Current: {pixel.width}×{pixel.height}. Baseline sits {pixel.baselineRow} rows from the bottom; placement in font units stays anchored so the glyph does not silently shift.</div>
+      <div className="hint">
+        Current: {pixel.width}×{pixel.height}. Baseline sits {pixel.baselineRow} rows from the bottom; placement in font units stays anchored so the glyph does not silently shift.
+      </div>
+      {led && (
+        <div className="warning-box small">
+          LED matrix font: the height is fixed at {led.rows} pixels. Only the width changes, and the advance follows it (width + {led.spacing} px spacing).
+        </div>
+      )}
       <div className="grid2">
         <Field label="New width"><input type="number" min={1} max={128} value={w} onChange={(e) => setW(Number(e.target.value))} /></Field>
-        <Field label="New height"><input type="number" min={1} max={128} value={h} onChange={(e) => setH(Number(e.target.value))} /></Field>
+        <Field label="New height">
+          <input type="number" min={1} max={128} value={h} disabled={!!led} onChange={(e) => setH(Number(e.target.value))} />
+        </Field>
       </div>
       <Field label="How to fit the existing drawing" hint="Crop/pad never distorts; resample scales with nearest-neighbour.">
         <SegBtns
@@ -752,6 +938,252 @@ export function RasterizeDialog(props: { slot: Slot; glyphId: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Pixel code: text art and LED column bytes (round-trip editing of one glyph)
+// ---------------------------------------------------------------------------
+export function PixelCodeDialog(props: { slot: Slot; glyphId: string }) {
+  const closeModal = useStore((s) => s.closeModal);
+  const commit = useStore((s) => s.commit);
+  const toast = useStore((s) => s.toast);
+  const doc = useStore((s) => s.fonts[props.slot])!;
+  const glyph = doc.glyphs.find((g) => g.id === props.glyphId);
+  const pixel = glyph?.pixel;
+  const led = doc.ledMatrix ?? null;
+  const current = useMemo(() => (pixel ? Bitmap.fromB64(pixel.width, pixel.height, pixel.cellsB64) : null), [pixel]);
+  const [format, setFormat] = useState<'ascii' | 'columns'>('ascii');
+  const [text, setText] = useState(() => (current ? bitmapToAscii(current) : ''));
+  const requiredRows = led ? led.rows : pixel?.height ?? 0;
+
+  const parsed = useMemo((): { bitmap: Bitmap | null; warnings: string[]; error: string | null } => {
+    try {
+      if (format === 'ascii') {
+        const r = asciiToBitmap(text);
+        if (r.rows !== requiredRows) {
+          throw new Error(`Got ${r.rows} row(s); this glyph needs exactly ${requiredRows} rows (${led ? 'LED matrix height' : 'grid height'}).`);
+        }
+        return { bitmap: r.bitmap, warnings: r.warnings, error: null };
+      }
+      const r = columnBytesToBitmap(text, requiredRows);
+      return { bitmap: r.bitmap, warnings: r.warnings, error: null };
+    } catch (err) {
+      return { bitmap: null, warnings: [], error: err instanceof Error ? err.message : String(err) };
+    }
+  }, [text, format, requiredRows, led]);
+
+  if (!glyph || !pixel || !current) {
+    return (
+      <ModalShell title="Pixel code" onClose={closeModal}>
+        <div className="warning-box">This glyph has no pixel grid.</div>
+        <div className="modal-actions"><Btn onClick={closeModal}>Close</Btn></div>
+      </ModalShell>
+    );
+  }
+
+  const switchFormat = (f: 'ascii' | 'columns') => {
+    setFormat(f);
+    setText(f === 'ascii' ? bitmapToAscii(current) : bitmapToColumnHex(current));
+  };
+
+  const apply = () => {
+    if (!parsed.bitmap) return;
+    commit(props.slot, 'Pixel code edit', (d) => setGlyphBitmap(d, props.glyphId, parsed.bitmap!));
+    toast('success', `Updated “${glyph.name}” from ${format === 'ascii' ? 'text art' : 'column bytes'} (${parsed.bitmap.width}×${parsed.bitmap.height}).`);
+    closeModal();
+  };
+
+  const bm = parsed.bitmap;
+  return (
+    <ModalShell title={`Pixel code — ${glyph.name}`} onClose={closeModal} wide>
+      <div className="hint">
+        {led
+          ? `LED matrix font: height is fixed at ${led.rows} rows. Width can be any value up to 128 columns.`
+          : `Grid height is ${pixel.height} rows. Width can change; height must match.`}{' '}
+        Row order is top to bottom, like the grid as displayed.
+      </div>
+      <Field label="Format">
+        <SegBtns
+          ariaLabel="Pixel code format"
+          value={format}
+          options={[
+            { v: 'ascii', label: 'Text art (# on, . off)', tip: 'One line per row; # is lit, . is off' },
+            { v: 'columns', label: 'LED column bytes', tip: 'One line per column; 8 rows per byte, bit 0 = top pixel' },
+          ]}
+          onChange={switchFormat}
+        />
+      </Field>
+      <div className="row" style={{ alignItems: 'stretch' }}>
+        <textarea
+          className="mono"
+          aria-label="Pixel code"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          rows={Math.min(18, Math.max(6, requiredRows + 2))}
+          spellCheck={false}
+          style={{ flex: '1 1 320px', minHeight: 140, fontFamily: 'ui-monospace, Menlo, Consolas, monospace' }}
+        />
+        <div style={{ minWidth: 180 }}>
+          <div className="small muted">Preview {bm ? `${bm.width}×${bm.height}` : ''}</div>
+          <PixelPreview bm={bm} />
+        </div>
+      </div>
+      {parsed.error && <div className="error-box">{parsed.error}</div>}
+      {parsed.warnings.map((w) => (
+        <div key={w} className="warning-box small">{w}</div>
+      ))}
+      <div className="modal-actions">
+        <Btn onClick={() => navigator.clipboard?.writeText(text).then(() => toast('success', 'Copied to clipboard.'), () => toast('error', 'Clipboard is not available here.'))}>
+          Copy text
+        </Btn>
+        <span className="spacer" />
+        <Btn onClick={closeModal}>Cancel</Btn>
+        <Btn kind="primary" onClick={apply} disabled={!bm}>Apply to glyph</Btn>
+      </div>
+    </ModalShell>
+  );
+}
+
+function PixelPreview(props: { bm: Bitmap | null }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const c = ref.current;
+    if (!c || !props.bm) return;
+    const bm = props.bm;
+    const cell = Math.max(2, Math.floor(160 / Math.max(bm.width, bm.height)));
+    c.width = bm.width * cell;
+    c.height = bm.height * cell;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    ctx.fillStyle = '#111827';
+    ctx.fillRect(0, 0, c.width, c.height);
+    ctx.fillStyle = '#fbbf24';
+    for (let y = 0; y < bm.height; y++) {
+      for (let x = 0; x < bm.width; x++) {
+        if (bm.get(x, bm.height - 1 - y)) ctx.fillRect(x * cell + 1, y * cell + 1, Math.max(1, cell - 2), Math.max(1, cell - 2));
+      }
+    }
+  }, [props.bm]);
+  return <canvas ref={ref} aria-label="Glyph preview" style={{ maxWidth: '100%', imageRendering: 'pixelated', border: '1px solid var(--border)', borderRadius: 4 }} />;
+}
+
+// ---------------------------------------------------------------------------
+// LED matrix settings (font level)
+// ---------------------------------------------------------------------------
+export function LedMatrixDialog(props: { slot: Slot }) {
+  const closeModal = useStore((s) => s.closeModal);
+  const commit = useStore((s) => s.commit);
+  const toast = useStore((s) => s.toast);
+  const doc = useStore((s) => s.fonts[props.slot])!;
+  const current = doc.ledMatrix ?? null;
+  const template = useMemo(() => doc.glyphs.find((g) => g.pixel)?.pixel ?? null, [doc]);
+  const initial = useMemo<LedMatrixSpec>(() => {
+    if (current) return current;
+    if (template) {
+      return { rows: template.height, cols: template.width, spacing: 1, cellUnits: Math.max(1, Math.round(template.unitsPerCell)), descentRows: template.baselineRow };
+    }
+    return defaultLedSpec();
+  }, [current, template]);
+  const [rows, setRows] = useState(initial.rows);
+  const [cols, setCols] = useState(initial.cols);
+  const [spacing, setSpacing] = useState(initial.spacing);
+  const [cell, setCell] = useState(initial.cellUnits);
+  const [below, setBelow] = useState(initial.descentRows);
+
+  let spec: LedMatrixSpec | null = null;
+  let error: string | null = null;
+  try {
+    spec = normalizeLedSpec({ rows, cols, spacing, cellUnits: cell, descentRows: below });
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+  }
+  const check = useMemo(() => (current ? checkLedFont(doc) : null), [doc, current]);
+  const vectorCount = doc.glyphs.filter((g) => !g.pixel && (g.kind === 'vector' || g.kind === 'compound' || g.contours.length > 0)).length;
+
+  const apply = () => {
+    if (!spec) {
+      toast('error', error ?? 'Check the LED matrix settings.');
+      return;
+    }
+    if (vectorCount > 0 && !window.confirm(`${vectorCount} vector glyph(s) will be rasterized onto the LED grid so they match exactly. Their outlines are replaced by pixels. Continue?`)) return;
+    commit(props.slot, current ? 'Change LED matrix' : 'Enable LED matrix', (d) => applyLedMatrix(d, spec));
+    toast('success', `LED matrix ${ledLabel(spec)} applied to Font ${props.slot}.`);
+    closeModal();
+  };
+
+  const turnOff = () => {
+    commit(props.slot, 'Turn off LED matrix', (d) => applyLedMatrix(d, null));
+    toast('success', 'LED matrix mode turned off. Glyph grids keep their pixels.');
+    closeModal();
+  };
+
+  return (
+    <ModalShell title="LED matrix (exact pixels)" onClose={closeModal} wide>
+      <div className="hint">
+        In LED mode every glyph lives on one pixel grid: each lit pixel is exactly <em>units per pixel</em> font units, offsets and side bearings are whole pixels, and every advance is (width + spacing) × units per pixel. This makes the TTF render exactly like the LED panel.
+      </div>
+      <div className="grid2">
+        <Field label="Matrix height (rows)"><input type="number" min={1} max={LED_MAX_ROWS} value={rows} onChange={(e) => setRows(Number(e.target.value))} aria-label="LED rows" /></Field>
+        <Field label="Default width (columns)"><input type="number" min={1} max={LED_MAX_ROWS} value={cols} onChange={(e) => setCols(Number(e.target.value))} aria-label="LED columns" /></Field>
+        <Field label="Units per LED pixel" hint="Integer. Preset sizes use multiples of 100 for crisp shapes."><input type="number" min={1} value={cell} onChange={(e) => setCell(Number(e.target.value))} aria-label="Units per LED pixel" /></Field>
+        <Field label="Letter spacing (px)"><input type="number" min={0} max={32} value={spacing} onChange={(e) => setSpacing(Number(e.target.value))} aria-label="LED spacing" /></Field>
+        <Field label="Rows below baseline"><input type="number" min={0} value={below} onChange={(e) => setBelow(Number(e.target.value))} aria-label="LED descent rows" /></Field>
+        <Field label="Preset">
+          <select
+            value=""
+            onChange={(e) => {
+              const p = LED_PRESETS.find((x) => x.id === e.target.value);
+              if (p) {
+                setRows(p.rows);
+                setCols(p.cols);
+              }
+            }}
+            aria-label="Apply LED preset"
+          >
+            <option value="">Choose…</option>
+            {LED_PRESETS.map((p) => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      {error ? (
+        <div className="error-box">{error}</div>
+      ) : (
+        <div className="hint">
+          Em size {spec!.rows * spec!.cellUnits} units · ascent {spec!.rows * spec!.cellUnits - spec!.descentRows * spec!.cellUnits} · descent {spec!.descentRows * spec!.cellUnits} · space advance {(Math.max(2, Math.round(spec!.cols / 2)) + spec!.spacing) * spec!.cellUnits}.
+        </div>
+      )}
+      <div className="row" style={{ alignItems: 'flex-start' }}>
+        <div className="small muted" style={{ flex: 1 }}>
+          {current ? `Current: ${ledLabel(current)}` : 'Currently a standard pixel font.'}
+          {check && (
+            <div style={{ marginTop: 6 }}>
+              {check.errors === 0 ? '✅ All glyphs are exact on the LED grid.' : `⚠ ${check.errors} error(s) — see Export checks for details.`}
+              {check.errors > 0 && (
+                <ul className="tight small">
+                  {check.issues.filter((i) => i.severity === 'error').slice(0, 5).map((i, k) => (
+                    <li key={k}>{i.message}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+      {vectorCount > 0 && (
+        <div className="warning-box small">
+          {vectorCount} vector glyph(s) will be rasterized to pixels to match the LED grid. Undo (Ctrl+Z) reverts the change.
+        </div>
+      )}
+      <div className="modal-actions">
+        {current && <Btn kind="danger" onClick={turnOff}>Turn LED mode off</Btn>}
+        <span className="spacer" />
+        <Btn onClick={closeModal}>Cancel</Btn>
+        <Btn kind="primary" onClick={apply} disabled={!spec}>{current ? 'Apply changes' : 'Enable LED matrix'}</Btn>
+      </div>
+    </ModalShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Help
 // ---------------------------------------------------------------------------
 export function HelpDialog() {
@@ -759,26 +1191,55 @@ export function HelpDialog() {
   return (
     <ModalShell title="Pixeel help & shortcuts" onClose={closeModal} wide>
       <div className="panel-section">
-        <h3>Keyboard shortcuts (pixel editor)</h3>
+        <h3>Pixel editor — keyboard</h3>
         <table className="report-table">
           <tbody>
             {[
-              ['B / P', 'Pencil'], ['E', 'Eraser'], ['F', 'Flood fill'], ['L', 'Line'], ['R', 'Rectangle'], ['M / S', 'Select & move'],
-              ['Arrows', 'Shift bitmap (or move selection when active)'], ['Ctrl+C / X / V', 'Copy / cut / paste'],
-              ['Ctrl+Z / Ctrl+Y', 'Undo / redo'], ['I', 'Invert'], ['Delete', 'Clear selection or grid'], ['G', 'Toggle grid lines'],
-              ['+ / −', 'Zoom'], ['Esc', 'Cancel selection / stroke'],
+              ['Arrow keys', 'Move the keyboard cursor one pixel (the cell is outlined on the canvas). With a selection, arrows nudge the selection instead.'],
+              ['Shift + arrows', 'Shift the whole glyph bitmap one pixel in that direction (the cursor stays put).'],
+              ['Space / Enter', 'Act at the cursor with the current tool (pencil/line/rect paints, eraser clears, fill floods from the cursor).'],
+              ['Shift + Space', 'Erase at the cursor, whatever the current tool.'],
+              ['T', 'Toggle the pixel under the cursor (on ↔ off).'],
+              ['B / P · E · F · L · R', 'Pencil · Eraser · Flood fill · Line · Rectangle'],
+              ['M / S', 'Select & move (marquee)'],
+              ['Ctrl+A', 'Select the whole grid'],
+              ['Ctrl+C / X / V', 'Copy / cut / paste. Paste puts the top-left corner at the cursor.'],
+              ['Esc', 'Place a floating selection back onto the grid (or cancel an in-progress stroke or marquee).'],
+              ['Delete / Backspace', 'Delete a floating selection, or clear the whole grid when nothing is selected.'],
+              ['I · G · + / −', 'Invert · toggle grid lines · zoom'],
+              ['Ctrl+Z / Ctrl+Y', 'Undo / redo (one step per edit; a move across fonts undoes in both fonts)'],
             ].map(([k, v]) => (
               <tr key={k}><td><span className="kbd">{k}</span></td><td>{v}</td></tr>
             ))}
           </tbody>
         </table>
+        <ul className="tight small">
+          <li><strong>Mouse:</strong> left button paints with the tool; <strong>right button drag erases</strong> with any paint tool. Hover shows the pixel coordinate in the status line (column from the left, row from the top). Rulers number the columns (top) and rows counted from the top (left); the cursor's row and column are highlighted.</li>
+          <li><strong>Pixel code…</strong> edits one glyph as text art (# on, . off) or as LED column bytes, with a live preview.</li>
+        </ul>
+      </div>
+      <div className="panel-section">
+        <h3>LED matrix fonts</h3>
+        <ul className="tight small">
+          <li>Create one with <em>New font → LED matrix</em>, or enable it later from the top bar (<em>LED matrix…</em>).</li>
+          <li>Every glyph has the same height (rows). Each pixel is exactly the same number of font units (an integer), so the TTF renders the same pixels as the panel.</li>
+          <li>Glyph origins and advances sit on whole-pixel boundaries; advance = (width + spacing) × units per pixel. Export checks report any glyph that breaks these rules.</li>
+          <li>Vector glyphs are rasterized (snapped) to the grid. The LED dot preview shows how the glyph looks on the panel.</li>
+        </ul>
+      </div>
+      <div className="panel-section">
+        <h3>Transfer between fonts A and B</h3>
+        <ul className="tight small">
+          <li>Select glyphs, then <em>Copy</em> or <em>Move</em> to the other font. Move copies first, then removes the glyphs from the source. <code>.notdef</code> is never removed.</li>
+          <li>Drag glyph cards onto the A or B tab to transfer them quickly.</li>
+          <li>Glyphs that collide with an existing code point can be replaced, skipped, or reassigned. A single undo reverts a transfer in both fonts.</li>
+        </ul>
       </div>
       <div className="panel-section">
         <h3>How it works</h3>
         <ul className="tight small">
           <li><strong>Pixel fonts:</strong> you draw on a grid; export traces filled pixels into sharp TrueType outlines (holes become counters). No bitmap strikes are embedded — the TTF contains real scalable outlines.</li>
           <li><strong>Imported fonts:</strong> original vector outlines are preserved until you edit a glyph. Edited glyphs lose their hinting instructions (reported at export). Composite glyphs are preserved while unedited and can be flattened explicitly.</li>
-          <li><strong>Two fonts:</strong> use the Compare tab or multi-select glyphs in the browser, then “Transfer”. Transfers are one undo step in the destination font.</li>
           <li><strong>Safety:</strong> your uploaded files are never modified; recovery snapshots are saved to IndexedDB as you work; project files are JSON you control.</li>
         </ul>
       </div>
@@ -786,3 +1247,4 @@ export function HelpDialog() {
     </ModalShell>
   );
 }
+
