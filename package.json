@@ -20,6 +20,7 @@
     "@mui/icons-material": "^9.5.0",
     "@mui/material": "^9.5.0",
     "fonteditor-core": "^2.6.3",
+    "jszip": "^3.10.2",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "zustand": "^5.0.15"

@@ -1,5 +1,7 @@
 # Pixeel — browser-based TTF font editor
 
+**🌐 Online tool: [https://sandro-defender.github.io/Pixeel-font-editor/](https://sandro-defender.github.io/Pixeel-font-editor/)**
+
 Pixeel is a **fully client-side** font editor: create pixel fonts from scratch, import
 existing `.ttf` files, edit glyphs, and export valid TrueType fonts — no backend, no
 account, no paid APIs. **Uploaded fonts never leave your device.**
@@ -17,10 +19,66 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | LED matrix fonts | Optional exact-pixel mode per font: fixed grid height, one integer unit size per lit pixel, glyph origins on whole-pixel boundaries, advance = (width + spacing) × pixel size; an LED dot preview; *Snap to LED grid* for vector glyphs; export checks that verify every glyph (errors for off-grid data, warnings for advances) |
 | Outline editor | Imported vector glyphs keep their original outlines; select contours & points, move points, reverse or delete contours; edit advance width and side bearings; composite glyphs detected and preserved (or explicitly flattened); **convert to pixels** for one glyph or the whole font, on one shared grid (see [Converting a font to pixels](#converting-a-font-to-pixels)); revert to the original outline |
 | Transfer A↔B | **Copy** or **Move** one or many glyphs either direction (Move removes them from the source after copying; `.notdef` is never removed; skipped glyphs stay put); drag glyph cards onto the A/B tabs; preserve source metrics or adapt; optional proportional scaling by units-per-em; baseline-aligned preview; collision handling (replace / skip / reassign); confirmation step; one undo step reverts both fonts for a move |
-| Metadata & licensing | Full name-table editor (family, style, full/PostScript name, version, author, copyright, description, manufacturer, URLs); license editor with custom text or the **official SIL OFL 1.1 template** (editable holder + Reserved Font Names); `LICENSE.txt` export; license embedded in the exported name table; imported copyright/license preserved by default and never replaced silently |
+| Metadata & licensing | Full name-table editor (family, style, full/PostScript name, **version**, **author**, copyright, description, manufacturer, URLs); license editor with custom text or the **official SIL OFL 1.1 template** (editable holder + Reserved Font Names); `LICENSE.txt` export; license embedded in the exported name table; imported copyright/license preserved by default and never replaced silently |
+| New-font wizard | Name, style, **author**, **version** and **license are created automatically** — pick *SIL OFL 1.1* and the full license text, copyright line and Reserved Font Name are generated for you at creation time |
+| ESPHome export | One click downloads a **ZIP with everything ESPHome needs** — see [Using fonts with ESPHome](#using-fonts-with-esphome) |
 | Preview | Live text preview rendered from the *currently edited* font (including unsaved changes), custom text/size/letter-spacing, samples for Latin, Georgian, numbers, punctuation |
 | Persistence | Project files (`.pixeel.json`) with both fonts + metadata + grids + settings; automatic IndexedDB recovery snapshot restored after refresh |
 | Export correctness | Real `glyf` TrueType outlines with correct cmap, metrics, names, bboxes and checksums; re-parse validation of every export; explicit report of preserved vs dropped tables |
+| Version display | The app version and the **name, version and author of the selected font** are always visible in the header and status bar |
+
+## Using fonts with ESPHome
+
+*Export → **ESPHome package .zip*** builds a ready-to-flash archive, so you never
+have to hand-write the `font:` block or guess which characters your font defines.
+The ZIP contains:
+
+```
+MyFont-Regular.ttf          the compiled TrueType font
+LICENSE.txt                 the license your font carries
+README.md                   wiring instructions
+esphome/MyFont-Regular.yaml a ready-to-paste font: block
+esphome/glyphs.txt          every glyph in your font, as plain text
+```
+
+The generated YAML is complete and valid:
+
+```yaml
+font:
+  - file: "MyFont-Regular.ttf"
+    id: myfont_regular
+    size: 16
+    # Only the glyphs that are defined in your font are listed below, keeping
+    # the firmware binary small. Edit this list to add/remove characters.
+    glyphs: " !\"#$%&'()*+,-./0123456789:;<=>?@ABC…"
+```
+
+To use it:
+
+1. Copy `MyFont-Regular.ttf` and the `esphome/` folder next to your node's `.yaml`.
+2. Paste the `font:` block into your config — or include the glyph list instead of
+   inlining it:
+   ```yaml
+   font:
+     - file: "MyFont-Regular.ttf"
+       id: myfont_regular
+       size: 16
+       glyphs: !include esphome/glyphs.txt
+   ```
+3. Draw with it from a display lambda:
+   ```cpp
+   it.print(0, 0, id(myfont_regular), "Hello!");
+   ```
+4. Compile and flash.
+
+Notes:
+
+- `size:` defaults to **16**; for an LED-matrix font the export uses the matrix
+  height. Change it freely — ESPHome rasterizes at whatever size you ask for.
+- Only the glyphs your font actually defines are listed (sorted by code point,
+  `.notdef` excluded). Trimming that list is the main lever on firmware size.
+- Quotes and backslashes in the glyph set are escaped, so the YAML always parses.
+- `LICENSE.txt` is included — respect the font's license when you redistribute.
 
 ## Converting a font to pixels
 
@@ -72,7 +130,7 @@ npm run dev          # http://localhost:5173
 ### Tests
 
 ```bash
-npm test             # 93 unit/integration tests (vitest)
+npm test             # 147 unit/integration tests (vitest)
 npm run verify:pages # builds with a subpath base and serves it under /test-repo/
 ```
 
@@ -85,6 +143,13 @@ LED matrix validation (exact pixels, advance warnings, height locking), text-art
 and column-byte round trips, LED conform on transfer, move transfers with one
 linked undo/redo and collision-skipped glyphs, and the pixel editor's keyboard
 cursor (one undo per Ctrl+Z).
+
+New-font identity is covered too: the derived names (full / PostScript / unique)
+follow the family and style instead of keeping placeholders, and author, version
+and a generated OFL license flow from the create dialog into the exported name
+table. The ESPHome package is verified end to end — the ZIP's file list, the
+embedded TTF, the `font:` block, the glyph set (including YAML escaping of quotes
+and backslashes), and the license/README that ship with it.
 
 Vector→pixel conversion has its own coverage: thin marks that sit off the
 baseline (underscores, minus signs, hairline stems) must never rasterize to an
@@ -238,7 +303,7 @@ Use **Shift+arrows** for that.
 ```
 src/core/       font model, bitmap engine, contour tracer, pixel-grid/rasterizer, TTF codec, licensing
 src/state/      zustand store (undo/redo history), glyph mutators
-src/services/   worker client, preview fonts, persistence, file actions
+src/services/   worker client, preview fonts, persistence, file actions, ESPHome package export
 src/workers/    export/preview web worker
 src/components/ UI: MUI top bar, glyph browser, editors, side panels, dialogs
 src/render/     canvas/SVG glyph rendering (cached bitmap layers)

@@ -21,7 +21,7 @@ import { dragFromOther, readGlyphDrag } from './glyphDrag';
 
 function Brand() {
   return (
-    <Stack direction="row" spacing={1} sx={{ alignItems: 'center',  mr: 1.5, userSelect: 'none' }} title="Pixeel — browser TTF font editor">
+    <Stack direction="row" spacing={1} sx={{ alignItems: 'center', mr: 1.5, userSelect: 'none' }} title="Pixeel — browser TTF font editor">
       <Box aria-hidden sx={{ display: 'grid', gridTemplateColumns: 'repeat(2, 7px)', gap: '1px' }}>
         <Box sx={{ width: 7, height: 7, borderRadius: '1px', bgcolor: 'primary.main' }} />
         <Box sx={{ width: 7, height: 7, borderRadius: '1px', bgcolor: 'secondary.main' }} />
@@ -30,6 +30,9 @@ function Brand() {
       </Box>
       <Typography variant="h6" component="span" sx={{ fontWeight: 800, letterSpacing: 0.5, fontSize: 18 }}>
         Pixeel
+      </Typography>
+      <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, opacity: 0.75, ml: 0.25 }} title={`App version v${__APP_VERSION__}`}>
+        v{__APP_VERSION__}
       </Typography>
     </Stack>
   );

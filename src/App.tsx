@@ -145,8 +145,16 @@ function StatusBar() {
     >
       <Typography variant="caption" color="text.secondary">
         Active: <strong>Font {active}</strong>
-        {doc ? ` — ${doc.meta.fontFamily} ${doc.meta.fontSubFamily}` : ' (empty)'}
       </Typography>
+      {doc ? (
+        <Typography variant="caption" sx={{ fontWeight: 700, color: 'primary.main' }}>
+          {doc.meta.fontFamily} <Box component="span" sx={{ fontWeight: 400, color: 'text.secondary' }}>{doc.meta.fontSubFamily}</Box>
+          {doc.meta.version ? <Box component="span" sx={{ color: 'text.secondary', ml: 0.75 }}>· {doc.meta.version}</Box> : null}
+          {doc.meta.designer ? <Box component="span" sx={{ color: 'text.secondary', ml: 0.75 }}>· by {doc.meta.designer}</Box> : null}
+        </Typography>
+      ) : (
+        <Typography variant="caption" color="text.secondary">(empty)</Typography>
+      )}
       {doc && <Typography variant="caption" color="text.secondary">{fileNames[active] ?? 'not saved to a file'}</Typography>}
       {doc && (
         <Typography variant="caption" color="text.secondary">
@@ -161,7 +169,7 @@ function StatusBar() {
       {lastSaved && <Typography variant="caption" color="text.secondary">project last saved {new Date(lastSaved).toLocaleTimeString()}</Typography>}
       <Box sx={{ flex: 1 }} />
       <Typography variant="caption" color="text.secondary">
-        Fonts stay on your device — nothing is uploaded.
+        Pixeel v{__APP_VERSION__} · Fonts stay on your device — nothing is uploaded.
       </Typography>
     </Paper>
   );

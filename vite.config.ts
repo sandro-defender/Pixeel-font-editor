@@ -3,6 +3,7 @@ import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
 import { execSync } from 'node:child_process';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 
 /**
  * Resolve the Vite `base` for GitHub Pages project sites.
@@ -38,14 +39,28 @@ function repoSlugFromGit(): string | null {
   }
 }
 
+/** Read package.json version for display in the UI. */
+function readAppVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(path.resolve(process.cwd(), 'package.json'), 'utf8'));
+    return String(pkg.version ?? '0.0.0');
+  } catch {
+    return '0.0.0';
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const base = resolveBase(env.VITE_BASE_PATH, env.VITE_BUILD_PAGES === '1', repoSlugFromGit());
+  const appVersion = readAppVersion();
   return {
     base,
     plugins: [react()],
     resolve: {
       alias: { '@': path.resolve(import.meta.dirname, 'src') },
+    },
+    define: {
+      __APP_VERSION__: JSON.stringify(appVersion),
     },
     server: { host: '0.0.0.0', port: 5173, allowedHosts: true },
     preview: { host: '0.0.0.0', port: 4173, allowedHosts: true },
