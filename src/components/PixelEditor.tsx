@@ -147,6 +147,9 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const setZoom = useStore((s) => s.setZoom);
   const setOverlayGlyph = useStore((s) => s.setOverlayGlyph);
   const toggleGridLines = useStore((s) => s.toggleGridLines);
+  const setStoreCursor = useStore((s) => s.setCursor);
+  const setStoreSelectionRect = useStore((s) => s.setSelectionRect);
+  const toggleMetricsHud = useStore((s) => s.toggleMetricsHud);
   const toast = useStore((s) => s.toast);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
@@ -176,6 +179,9 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const [stroke, setStroke] = useState<{ x0: number; y0: number; x1: number; y1: number; value: number } | null>(null);
   const [marquee, setMarquee] = useState<Rect4 | null>(null);
   const [cursor, setCursor] = useState<Cell>({ x: 0, y: Math.max(0, gridH - 1) });
+  useEffect(() => {
+    setStoreCursor(slot, { x: cursor.x, y: cursor.y });
+  }, [cursor, slot, setStoreCursor]);
   const [hover, setHover] = useState<Cell | null>(null);
   const [kbAnchor, setKbAnchor] = useState<Cell | null>(null);
   const [tick, setTick] = useState(0);
@@ -185,6 +191,20 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
 
   // a selection only means something for the pixel data it was cut from
   const sel = rawSel && pixel && rawSel.afterB64 === pixel.cellsB64 ? rawSel : null;
+
+  useEffect(() => {
+    if (sel) {
+      setStoreSelectionRect(slot, { x: sel.x, y: sel.y, w: sel.bm.width, h: sel.bm.height });
+    } else if (marquee) {
+      const x0 = Math.min(marquee.x0, marquee.x1);
+      const y0 = Math.min(marquee.y0, marquee.y1);
+      const x1 = Math.max(marquee.x0, marquee.x1);
+      const y1 = Math.max(marquee.y0, marquee.y1);
+      setStoreSelectionRect(slot, { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 });
+    } else {
+      setStoreSelectionRect(slot, null);
+    }
+  }, [sel, marquee, slot, setStoreSelectionRect]);
 
   // start each glyph with the cursor at the bottom-left of the grid (top row, see ruler) and no leftovers
   const [lastGlyph, setLastGlyph] = useState(glyph.id);
@@ -784,6 +804,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       case 'r': handled(); setTool(slot, 'rect'); break;
       case 'm': case 's': handled(); setTool(slot, 'select'); break;
       case 'g': handled(); toggleGridLines(slot); break;
+      case 'h': handled(); toggleMetricsHud(slot); break;
       case 'i': handled(); transform('Invert', (bm) => bm.invert()); break;
       case 'delete':
       case 'backspace': {

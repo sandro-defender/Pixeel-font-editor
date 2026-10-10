@@ -12,6 +12,8 @@ import { EditorPanel } from './components/EditorPanel';
 import { SidePanel } from './components/SidePanel';
 import { BusyOverlay, ConfirmDialog, Toasts, isTextEntryTarget } from './components/ui';
 import { ModalHost } from './components/dialogs';
+import { CommandPalette } from './components/CommandPalette';
+import { OnboardingPanel, useOnboarding } from './components/Onboarding';
 import { createAppTheme } from './theme/theme';
 import { importFontFile, openProjectFile, releaseSourcesNotIn, saveProjectFile } from './services/fileActions';
 import { cancelScheduledRecoverySave, discardRecovery, peekRecovery, restoreRecovery, saveRecoveryNow, scheduleRecoverySave } from './services/persistence';
@@ -135,7 +137,12 @@ function StatusBar() {
   const fileNames = useStore((s) => s.fileNames);
   const dirty = useStore((s) => s.dirty);
   const lastSaved = useStore((s) => s.lastProjectSavedAt);
+  const ui = useStore((s) => s.ui[active]);
+  const glyphId = ui.glyphId;
+  const cursor = ui.cursor;
+  const sel = ui.selectionRect;
   const doc = fonts[active];
+  const glyph = doc?.glyphs.find((g) => g.id === glyphId) ?? null;
   return (
     <Paper
       component="footer"
@@ -161,6 +168,16 @@ function StatusBar() {
           {doc.glyphs.length} glyphs · upm {doc.metrics.unitsPerEm}
         </Typography>
       )}
+      {doc && glyph && (
+        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+          adv {glyph.advanceWidth} · LSB {glyph.leftSideBearing} · {glyph.pixel ? `${glyph.pixel.width}×${glyph.pixel.height}` : `${glyph.contours.length}c`}
+        </Typography>
+      )}
+      {ui && (
+        <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+          {cursor ? `cursor ${cursor.x},${cursor.y}` : 'no cursor'} · {sel ? `sel ${sel.w}×${sel.h}` : 'no sel'} · {ui.zoom}× zoom · {ui.showGrid ? 'grid' : 'no grid'} {ui.showMetricsHud ? '· HUD' : ''}
+        </Typography>
+      )}
       {doc && (
         <Typography variant="caption" color={dirty[active] ? 'warning.main' : 'success.main'}>
           {dirty[active] ? '● unsaved changes' : '✓ saved'}
@@ -176,16 +193,39 @@ function StatusBar() {
 }
 
 /** Global keyboard shortcuts. The pixel editor handles its own keys and calls preventDefault. */
-function useGlobalShortcuts() {
+function useGlobalShortcuts(openPalette: () => void) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
       const s = useStore.getState();
+      const mod = e.ctrlKey || e.metaKey;
+      // Command palette should work even when typing, but not when a modal/confirm is open (palette itself is a dialog)
+      if (mod && e.key.toLowerCase() === 'k') {
+        // allow palette even if modal is none? but block if confirm is open or if palette already open handled by dialog
+        if (s.confirm) return;
+        // don't open if already in a modal that is not the palette (palette is managed separately)
+        // we check if any MUI dialog is open via modal.type !== 'none' — still allow palette? spec says palette works when no modal is open
+        // So block palette when modal is open, except we want to allow it to close? We'll block open when modal open.
+        if (s.modal.type !== 'none') return;
+        e.preventDefault();
+        openPalette();
+        return;
+      }
       // dialogs own the keyboard while open; text fields keep their native undo/redo
       if (s.modal.type !== 'none' || s.confirm) return;
-      if (isTextEntryTarget(e.target)) return;
-      const mod = e.ctrlKey || e.metaKey;
-      if (!mod) return;
+      if (isTextEntryTarget(e.target)) {
+        // still allow HUD toggle? No, don't steal typing
+        return;
+      }
+      if (!mod) {
+        // H toggles metrics HUD (no modifier)
+        if (e.key.toLowerCase() === 'h') {
+          e.preventDefault();
+          s.toggleMetricsHud(s.active);
+          return;
+        }
+        return;
+      }
       const key = e.key.toLowerCase();
       if (key === 'z' && !e.shiftKey) {
         e.preventDefault();
@@ -200,7 +240,7 @@ function useGlobalShortcuts() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [openPalette]);
 }
 
 /** Drag & drop font and project files anywhere in the window. */
@@ -336,7 +376,10 @@ function WorkspaceArea() {
 export default function App() {
   const theme = useStore((s) => s.theme);
   const muiTheme = useMemo(() => createAppTheme(theme), [theme]);
-  useGlobalShortcuts();
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const openPalette = useMemo(() => () => setPaletteOpen(true), []);
+  const onboarding = useOnboarding();
+  useGlobalShortcuts(openPalette);
   useRecovery();
   const dragging = useFileDrop();
 
@@ -344,11 +387,15 @@ export default function App() {
     <ThemeProvider theme={muiTheme}>
       <CssBaseline />
       <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', bgcolor: 'background.default' }}>
-        <TopBar />
+        <TopBar onOpenPalette={() => setPaletteOpen(true)} />
         <RecoveryBanner />
         <WorkspaceArea />
         <StatusBar />
         <ModalHost />
+        <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
+        {onboarding.show && (
+          <OnboardingPanel onDismiss={onboarding.dismiss} />
+        )}
         <ConfirmDialog />
         <Toasts />
         <BusyOverlay />

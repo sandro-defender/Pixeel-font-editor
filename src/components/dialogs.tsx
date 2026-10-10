@@ -1726,43 +1726,78 @@ export function LedMatrixDialog(props: { slot: Slot }) {
 // ---------------------------------------------------------------------------
 // Help
 // ---------------------------------------------------------------------------
-const SHORTCUTS: Array<[string, string]> = [
-  ['Arrow keys', 'Move the keyboard cursor one pixel (the cell is outlined on the canvas). With a selection, arrows nudge the selection instead — it always stays inside the grid, so no pixels are lost.'],
-  ['Shift + arrows', 'Shift the whole glyph bitmap one pixel in that direction (the cursor stays put).'],
-  ['Space / Enter', 'Act at the cursor with the current tool (pencil/line/rect paints, eraser clears, fill floods from the cursor).'],
-  ['Shift + Space', 'Erase at the cursor, whatever the current tool.'],
-  ['T', 'Toggle the pixel under the cursor (on ↔ off).'],
-  ['B / P · E · F · L · R', 'Pencil · Eraser · Flood fill · Line · Rectangle'],
-  ['M / S', 'Select & move (marquee)'],
-  ['Ctrl+A', 'Select the whole grid'],
-  ['Ctrl+C / X / V', 'Copy / cut / paste. Paste puts the top-left corner at the cursor, clamped so the clipboard stays inside the grid.'],
-  ['Esc', 'Place a floating selection back onto the grid (or cancel an in-progress stroke or marquee).'],
-  ['Delete / Backspace', 'Delete a floating selection, or clear the whole grid when nothing is selected.'],
-  ['I · G · + / −', 'Invert · toggle grid lines · zoom'],
-  ['Ctrl+Z / Ctrl+Y', 'Undo / redo (one step per edit; a move across fonts undoes in both fonts)'],
-  ['Ctrl+S', 'Save the project file'],
+const SHORTCUTS: Array<[string, string, string?]> = [
+  ['Arrow keys', 'Move the keyboard cursor one pixel (the cell is outlined on the canvas). With a selection, arrows nudge the selection instead — it always stays inside the grid, so no pixels are lost.', 'Pixel editor'],
+  ['Shift + arrows', 'Shift the whole glyph bitmap one pixel in that direction (the cursor stays put).', 'Pixel editor'],
+  ['Space / Enter', 'Act at the cursor with the current tool (pencil/line/rect paints, eraser clears, fill floods from the cursor).', 'Pixel editor'],
+  ['Shift + Space', 'Erase at the cursor, whatever the current tool.', 'Pixel editor'],
+  ['T', 'Toggle the pixel under the cursor (on ↔ off).', 'Pixel editor'],
+  ['B / P · E · F · L · R', 'Pencil · Eraser · Flood fill · Line · Rectangle', 'Tools'],
+  ['M / S', 'Select & move (marquee)', 'Tools'],
+  ['G', 'Toggle grid lines', 'View'],
+  ['H', 'Toggle metrics HUD overlay (shows advance, bearings, bbox, pixel count, cursor, selection)', 'View'],
+  ['+ / −', 'Zoom in / out', 'View'],
+  ['I', 'Invert the grid', 'Edit'],
+  ['Ctrl+A', 'Select the whole grid', 'Selection'],
+  ['Ctrl+C / X / V', 'Copy / cut / paste. Paste puts the top-left corner at the cursor, clamped so the clipboard stays inside the grid.', 'Clipboard'],
+  ['Esc', 'Place a floating selection back onto the grid (or cancel an in-progress stroke or marquee).', 'Selection'],
+  ['Delete / Backspace', 'Delete a floating selection, or clear the whole grid when nothing is selected.', 'Edit'],
+  ['Ctrl+Z / Ctrl+Y', 'Undo / redo (one step per edit; a move across fonts undoes in both fonts)', 'History'],
+  ['Ctrl+S', 'Save the project file', 'File'],
+  ['Ctrl+K', 'Open command palette — fuzzy search commands, jump to glyph by character or U+ code', 'Navigation'],
+  ['Ctrl/Cmd + K then type', 'In palette, type a command name or a glyph (A, U+10D0) and press Enter to jump', 'Navigation'],
 ];
 
 export function HelpDialog() {
   const closeModal = useStore((s) => s.closeModal);
+  const [q, setQ] = useState('');
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    if (!s) return SHORTCUTS;
+    return SHORTCUTS.filter(([k, v, cat]) => k.toLowerCase().includes(s) || v.toLowerCase().includes(s) || (cat && cat.toLowerCase().includes(s)));
+  }, [q]);
+  const resetOnboarding = () => {
+    try {
+      localStorage.removeItem('pixeel-onboarding-dismissed');
+    } catch {}
+    closeModal();
+    setTimeout(() => {
+      window.location.reload();
+    }, 100);
+  };
   return (
     <AppDialog
       title="Pixeel help & shortcuts"
       onClose={closeModal}
       maxWidth="md"
       actions={
-        <Button variant="contained" color="primary" onClick={closeModal}>
-          Got it
-        </Button>
+        <>
+          <Button onClick={resetOnboarding}>Reset onboarding</Button>
+          <Box sx={{ flex: 1 }} />
+          <Button variant="contained" color="primary" onClick={closeModal}>
+            Got it
+          </Button>
+        </>
       }
     >
-      <Section title="Keyboard shortcuts">
+      <TextField
+        label="Search shortcuts"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder="Filter by key, description or category…"
+        autoFocus
+        slotProps={{ input: { startAdornment: undefined } }}
+      />
+      <Section title={`Keyboard shortcuts (${filtered.length} of ${SHORTCUTS.length})`}>
         <Table size="small" aria-label="Keyboard shortcuts">
           <TableBody>
-            {SHORTCUTS.map(([k, v]) => (
+            {filtered.map(([k, v, cat]) => (
               <TableRow key={k}>
-                <TableCell sx={{ whiteSpace: 'nowrap', width: 200 }}>
-                  <Chip label={k} size="small" variant="outlined" sx={{ fontFamily: 'ui-monospace, Menlo, Consolas, monospace' }} />
+                <TableCell sx={{ whiteSpace: 'nowrap', width: 220 }}>
+                  <Stack direction="row" spacing={0.5} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
+                    <Chip label={k} size="small" variant="outlined" sx={{ fontFamily: 'ui-monospace, Menlo, Consolas, monospace' }} />
+                    {cat && <Chip label={cat} size="small" color="secondary" variant="outlined" sx={{ height: 18, fontSize: 10 }} />}
+                  </Stack>
                 </TableCell>
                 <TableCell>{v}</TableCell>
               </TableRow>
