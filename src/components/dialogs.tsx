@@ -21,6 +21,7 @@ import {
   Typography,
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import GridOnIcon from '@mui/icons-material/GridOn';
 import DownloadIcon from '@mui/icons-material/Download';
 import { useStore, type ModalState, type TransferMode } from '../state/store';
 import type { FontDoc, FontMeta, LedMatrixSpec, Slot } from '../core/types';
@@ -49,7 +50,7 @@ import { DEFAULT_EXPORT_OPTIONS, resolveGlyphContours, type ExportReport } from 
 import { downloadArrayBuffer, downloadBlob } from '../services/persistence';
 import { releaseSourcesNotIn } from '../services/fileActions';
 import { findConflicts, sourceAfterMove, transferGlyphs, type CollisionStrategy, type MetricsMode } from '../core/transfer';
-import { rasterizeGlyphContours } from '../core/rasterize';
+import { detectFontPixelGrid, gridForRows, pixelizeFont, placeOnGrid, type PixelizeReport } from '../core/pixelGrid';
 import { Bitmap, MAX_GRID } from '../core/bitmap';
 import { ledDotSize, paintBitmap, paintLedDots, toRgba } from '../render/bitmapCanvas';
 import { AppDialog, Hint, SegmentedControl, Section } from './ui';
@@ -1045,103 +1046,225 @@ export function ResizeGridDialog(props: { slot: Slot; glyphId: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Rasterize vector glyph → pixels
+// Convert to pixel grid (font-wide)
 // ---------------------------------------------------------------------------
-export function RasterizeDialog(props: { slot: Slot; glyphId: string }) {
+
+/**
+ * Convert vector outlines to editable pixels.
+ *
+ * The whole font is put on **one** shared grid — same cell size, same baseline
+ * row — which is what makes a converted font line up. When the font really is a
+ * pixel font, its native grid is detected first (the size at which every cell
+ * is either completely full or completely empty) and the conversion is lossless.
+ */
+export function RasterizeDialog(props: { slot: Slot; glyphId?: string; scope?: 'glyph' | 'font' }) {
   const closeModal = useStore((s) => s.closeModal);
   const commit = useStore((s) => s.commit);
   const toast = useStore((s) => s.toast);
   const theme = useStore((s) => s.theme);
-  const { doc, glyph } = useGlyph(props.slot, props.glyphId);
-  const contours = glyph?.contours ?? [];
-  const [gridH, setGridH] = useState(16);
+  const doc = useStore((s) => s.fonts[props.slot]);
+  const [scope, setScope] = useState<'glyph' | 'font'>(props.scope ?? (props.glyphId ? 'glyph' : 'font'));
+  const [rows, setRows] = useState(16);
+  const [snapAdvance, setSnapAdvance] = useState(true);
+  const [useDetected, setUseDetected] = useState(true);
   const previewRef = useRef<HTMLCanvasElement>(null);
 
-  // works for outline-less glyphs too (they get an empty grid + a warning)
-  const result = useMemo(
-    () => (doc ? rasterizeGlyphContours(contours, doc.metrics, Math.max(4, Math.min(MAX_GRID, gridH))) : null),
-    [contours, doc, gridH],
+  // Detection runs once per font: it only measures the outline lattice and a
+  // sample of glyphs, so it stays well under a frame budget.
+  const detection = useMemo(
+    () => (doc ? detectFontPixelGrid(doc, (g) => resolveGlyphContours(g, doc.glyphs)) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [doc?.fontId],
   );
-  const raster = result?.pixel ?? null;
+  const detected = detection?.grid ?? null;
+  const box = detection?.box ?? null;
+
+  const grid = useMemo(() => {
+    if (!doc || !box) return null;
+    if (detected && useDetected) return detected;
+    return gridForRows(box, Math.max(4, Math.min(MAX_GRID, rows)));
+  }, [doc, box, detected, useDetected, rows]);
+
+  // Glyph shown in the preview: the one the dialog was opened from, else the
+  // first glyph of the font that has an outline.
+  const previewGlyph = useMemo(() => {
+    if (!doc) return null;
+    const fromProps = props.glyphId ? doc.glyphs.find((g) => g.id === props.glyphId) : null;
+    if (fromProps) return fromProps;
+    return doc.glyphs.find((g) => g.name !== '.notdef' && (g.kind === 'vector' || g.kind === 'compound' || g.contours.length > 0)) ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, props.glyphId]);
+
+  const preview = useMemo(() => {
+    if (!doc || !grid || !previewGlyph) return null;
+    const cs = resolveGlyphContours(previewGlyph, doc.glyphs);
+    return cs.length ? placeOnGrid(cs, grid) : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, grid, previewGlyph?.id]);
 
   useEffect(() => {
     const canvas = previewRef.current;
-    if (!canvas || !raster) return;
-    const bm = Bitmap.fromB64(raster.width, raster.height, raster.cellsB64);
-    paintBitmap(canvas, bm, 6, { on: toRgba(inkFor(theme)), off: null });
-  }, [raster, theme]);
+    if (!canvas || !preview) return;
+    paintBitmap(canvas, preview.bitmap, 6, { on: toRgba(inkFor(theme)), off: null });
+  }, [preview, theme]);
 
-  if (!doc || !glyph || !raster) return <GoneNotice title="Convert to pixel grid" onClose={closeModal} />;
+  if (!doc) return <GoneNotice title="Convert to pixel grid" onClose={closeModal} />;
+
+  const led = doc.ledMatrix ?? null;
+  const target = led ? 0 : scope === 'glyph' ? (props.glyphId ? 1 : 0) : (detection?.convertible ?? 0);
 
   const apply = () => {
-    const ok = commit(props.slot, 'Rasterize to pixels', (d) => ({
-      ...d,
-      glyphs: d.glyphs.map((g) =>
-        g.id === props.glyphId
-          ? {
-              ...g,
-              pixel: { width: raster.width, height: raster.height, cellsB64: raster.cellsB64, unitsPerCell: raster.unitsPerCell, offsetX: raster.offsetX, baselineRow: raster.baselineRow },
-              kind: 'pixel' as const,
-              sourceContours: g.contours.length ? g.contours.map((c) => c.map((p) => ({ ...p }))) : g.sourceContours,
-              edited: true,
-            }
-          : g,
-      ),
-    }));
-    if (ok) {
-      toast('success', 'Glyph converted to a pixel grid. The original outline is kept — use “Revert to original outline” any time before export replaces it.');
+    if (!grid) return;
+    const captured: { report: PixelizeReport | null } = { report: null };
+    const ok = commit(props.slot, scope === 'font' ? 'Convert font to pixels' : 'Convert glyph to pixels', (d) => {
+      const res = pixelizeFont(d, {
+        grid,
+        scope,
+        glyphId: props.glyphId,
+        snapAdvance,
+        contoursOf: (g) => resolveGlyphContours(g, d.glyphs),
+      });
+      captured.report = res.report;
+      return res.doc;
+    });
+    if (ok && captured.report) {
+      const r = captured.report;
+      const bits = [`${r.converted} glyph${r.converted === 1 ? '' : 's'} converted`];
+      if (r.rescued) bits.push(`${r.rescued} had ink thinner than one pixel`);
+      if (r.clipped) bits.push(`${r.clipped} reached past the grid`);
+      if (r.snapAdvance) bits.push('advances snapped to whole pixels');
+      toast('success', `${bits.join('; ')}. Undo (Ctrl+Z) restores the outlines.`);
     }
     closeModal();
   };
 
-  const lit = Bitmap.fromB64(raster.width, raster.height, raster.cellsB64).count();
+  const lit = preview?.stats.lit ?? 0;
 
   return (
     <AppDialog
-      title={`Convert to pixel grid — ${glyph.name}`}
+      title="Convert to pixel grid"
       onClose={closeModal}
       actions={
         <>
           <Button onClick={closeModal}>Cancel</Button>
-          <Button variant="contained" color="primary" onClick={apply}>
-            Create editable pixel grid
+          <Button variant="contained" color="primary" onClick={apply} disabled={!grid || target === 0}>
+            {scope === 'font' ? `Convert ${target} glyph${target === 1 ? '' : 's'}` : 'Create editable pixel grid'}
           </Button>
         </>
       }
     >
-      <Alert severity="warning">
-        Rasterization <strong>loses vector detail</strong>: curves become cell-sized steps. This only prepares an editable grid — the original outline is kept until you export the edited
-        pixel version (explicit), and you can revert at any time.
-      </Alert>
+      {led && (
+        <Alert severity="info">
+          <strong>Font {props.slot} is an LED matrix font</strong> ({ledLabel(led)}), so its grid is already fixed: every
+          glyph is {led.rows} pixels tall with {led.cellUnits} units per pixel. Use <em>Snap to LED grid</em> in the pixel
+          editor to rasterize a vector glyph onto it, or switch LED mode off first.
+        </Alert>
+      )}
+      {detected ? (
+        <Alert severity="success" icon={<GridOnIcon fontSize="inherit" />}>
+          <strong>Pixel font detected.</strong> Every outline lands on a {Math.round(detected.unitsPerCell * 100) / 100}-unit lattice aligned to the
+          baseline — {detected.rows} rows, {(Math.round((1 - (detection?.score ?? 0)) * 1000) / 10).toFixed(1)} % of the ink resolves to clean pixels. Converting at that
+          size is <strong>lossless</strong>.
+        </Alert>
+      ) : (
+        <Alert severity="warning">
+          This font is not drawn on a pixel lattice, so converting it is a <strong>downsample</strong>: curves become cell-sized
+          steps. The original outlines are kept — “Revert to original outline” restores any glyph.
+        </Alert>
+      )}
+
       <Stack spacing={1}>
-        <Typography variant="subtitle2" id="raster-height-label">
-          Grid height — {raster.height} rows covering the glyph
-        </Typography>
-        <Slider value={gridH} min={4} max={MAX_GRID} onChange={(_, v) => setGridH(v as number)} aria-labelledby="raster-height-label" />
-        <Hint>
-          Pixel-font outlines that fit the selected size keep their exact grid alignment: 16px with 2px strokes becomes 8px with 1px strokes. Other outlines are sampled by coverage; smaller grids can lose detail.
-        </Hint>
-        {result?.refined && (
-          <Alert severity="info">
-            The outline is thinner than one pixel at this size; the preview was re-sampled more finely so nothing disappears. Raise the grid height for a cleaner result.
-          </Alert>
-        )}
-        {lit === 0 && <Alert severity="error">This glyph has no drawable outline — nothing to rasterize.</Alert>}
-      </Stack>
-      <Stack sx={{ alignItems: 'center' }} direction="row" spacing={2}>
-        <Box
-          component="canvas"
-          ref={previewRef}
-          aria-label="Rasterization preview"
-          sx={{ border: 1, borderColor: 'divider', borderRadius: 1, maxWidth: '100%', imageRendering: 'pixelated', bgcolor: 'background.default' }}
+        <Typography variant="subtitle2" id="raster-scope-label">What to convert</Typography>
+        <SegmentedControl
+          ariaLabel="Conversion scope"
+          value={scope}
+          options={[
+            { value: 'glyph', label: 'This glyph', tip: 'Convert only the glyph you came from, on the font grid' },
+            { value: 'font', label: 'Whole font', tip: 'Convert every outlined glyph at once — one undo step' },
+          ]}
+          onChange={(v) => setScope(v as 'glyph' | 'font')}
         />
         <Hint>
-          {raster.width}×{raster.height} cells · {raster.unitsPerCell.toFixed(1)} units/cell ·{' '}
-          {raster.baselineRow >= 0 && raster.baselineRow < raster.height
-            ? `baseline row ${raster.baselineRow}`
-            : `baseline ${Math.abs(raster.baselineRow)} row${Math.abs(raster.baselineRow) === 1 ? '' : 's'} ${raster.baselineRow < 0 ? 'above' : 'below'} the grid`}
+          Either way the glyph lands on the font's shared grid, so its pixel size and baseline row match every other glyph.
         </Hint>
       </Stack>
+
+      {detected && (
+        <Stack spacing={1}>
+          <Typography variant="subtitle2" id="raster-source-label">Grid to use</Typography>
+          <SegmentedControl
+            ariaLabel="Grid source"
+            value={useDetected ? 'detected' : 'rows'}
+            options={[
+              { value: 'detected', label: `Detected size (${detected.rows} rows)`, tip: 'The font’s own pixel lattice — lossless' },
+              { value: 'rows', label: 'Pick the height', tip: 'Downsample onto a grid of your own height' },
+            ]}
+            onChange={(v) => setUseDetected(v === 'detected')}
+          />
+        </Stack>
+      )}
+
+      {(!detected || !useDetected) && (
+        <Stack spacing={1}>
+          <Typography variant="subtitle2" id="raster-height-label">
+            Grid height — {grid ? grid.rows : rows} rows for the whole design
+          </Typography>
+          <Slider
+            value={rows}
+            min={4}
+            max={MAX_GRID}
+            onChange={(_, v) => setRows(v as number)}
+            aria-labelledby="raster-height-label"
+          />
+          <Hint>
+            The grid spans the font's design (ascent to descent, widened to the real ink), so all glyphs share one baseline.
+            Raise the height to keep more detail; lower it for a chunkier pixel look.
+          </Hint>
+        </Stack>
+      )}
+
+      <FormControlLabel
+        control={<Checkbox checked={snapAdvance} onChange={(e) => setSnapAdvance(e.target.checked)} />}
+        label="Snap advance widths to whole pixels"
+      />
+      <Hint>
+        Keeps text set in the font on the lattice. Without it the converted font drifts by fractions of a pixel per glyph and
+        the crisp rendering is lost again.
+      </Hint>
+
+      {preview && (
+        <Stack sx={{ alignItems: 'center', flexWrap: 'wrap' }} direction="row" spacing={2} useFlexGap>
+          <Box
+            component="canvas"
+            ref={previewRef}
+            aria-label="Rasterization preview"
+            sx={{ border: 1, borderColor: 'divider', borderRadius: 1, maxWidth: '100%', imageRendering: 'pixelated', bgcolor: 'background.default' }}
+          />
+          <Stack spacing={0.5}>
+            <Typography variant="subtitle2">{previewGlyph?.name}</Typography>
+            <Hint>
+              {preview.pixel.width}×{preview.pixel.height} cells · {Math.round(preview.pixel.unitsPerCell * 100) / 100} units/pixel ·
+              baseline row {Math.round(preview.pixel.baselineRow * 100) / 100}
+            </Hint>
+            <Hint>
+              {preview.stats.lit} lit cell{preview.stats.lit === 1 ? '' : 's'} from {preview.stats.ink.toFixed(1)} cells of ink
+              {preview.stats.grayness > 0.02 ? ` · ${Math.round(preview.stats.grayness * 100)} % of it on part-covered cells` : ''}
+            </Hint>
+          </Stack>
+        </Stack>
+      )}
+      {preview?.stats.rescued && (
+        <Alert severity="info">
+          This glyph's strokes are thinner than one pixel at this size; the best-covered cells were lit so it stays visible.
+          Raise the grid height for a cleaner result.
+        </Alert>
+      )}
+      {preview && lit === 0 && <Alert severity="error">The preview glyph has no drawable outline — nothing to rasterize.</Alert>}
+      {scope === 'font' && target > 200 && (
+        <Alert severity="info">
+          Converting {target} glyphs in one step. It is a single undo step, and every outline is kept for reverting.
+        </Alert>
+      )}
     </AppDialog>
   );
 }
@@ -1611,7 +1734,7 @@ export function ModalHost() {
     case 'resizeGrid':
       return <ResizeGridDialog slot={modal.slot} glyphId={modal.glyphId} />;
     case 'rasterize':
-      return <RasterizeDialog slot={modal.slot} glyphId={modal.glyphId} />;
+      return <RasterizeDialog slot={modal.slot} glyphId={modal.glyphId} scope={modal.scope} />;
     case 'addGlyph':
       return <AddGlyphDialog slot={modal.slot} />;
     case 'pixelCode':

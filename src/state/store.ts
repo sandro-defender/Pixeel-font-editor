@@ -36,7 +36,7 @@ export type ModalState =
   | { type: 'export'; slot: Slot }
   | { type: 'transfer'; from: Slot; glyphIds: string[]; mode?: TransferMode }
   | { type: 'resizeGrid'; slot: Slot; glyphId: string }
-  | { type: 'rasterize'; slot: Slot; glyphId: string }
+  | { type: 'rasterize'; slot: Slot; glyphId?: string; scope?: 'glyph' | 'font' }
   | { type: 'addGlyph'; slot: Slot }
   | { type: 'pixelCode'; slot: Slot; glyphId: string }
   | { type: 'ledMatrix'; slot: Slot }

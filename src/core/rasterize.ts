@@ -1,69 +1,300 @@
-/** Rasterize vector contours into a pixel grid (for the pixel editor). */
+/**
+ * Rasterize vector contours into a pixel grid.
+ *
+ * Why this file was rewritten
+ * ---------------------------
+ * The old rasterizer sampled 9 points per cell and lit a cell when 2 of them
+ * landed inside the outline. That is wrong in two ways that made converted
+ * fonts unusable:
+ *
+ *  1. **Probe counting is not coverage.** A cell that is 20 % covered could
+ *     light (two probes happened to land inside) while one that is 60 %
+ *     covered could stay dark. Stroke weight drifted glyph to glyph.
+ *  2. **The frame was sized from each glyph's own ink height.** Every glyph in
+ *     a font therefore got a *different* cell size and a *different* baseline
+ *     row: an `i` and a `g` converted from the same font no longer lined up,
+ *     and a wide flat glyph (hyphen, underscore, macron) produced cells so
+ *     tiny that its ink flooded a 50-column grid.
+ *
+ * This implementation instead
+ *
+ *  - computes the **exact area coverage** of every cell (Sutherland–Hodgman
+ *    clip of the outline against the cell rectangle + shoelace area), so a
+ *    cell's value is the true ink fraction 0..1;
+ *  - lights a cell at **majority coverage** (default 0.5), the standard
+ *    box-filter downsample, which preserves stroke weight;
+ *  - guarantees a glyph with ink never comes back empty (thin-feature rescue);
+ *  - derives its frame from a **font-wide grid** (see `pixelGrid.ts`) so every
+ *    glyph of a font shares one cell size and one baseline row.
+ */
 import { Bitmap, MAX_GRID } from './bitmap';
-import { contourBoundsTight, createWindingTester } from './contours';
+import { contourBoundsTight, contourToSegments } from './contours';
 import type { Contour, PixelData } from './types';
 
 export interface RasterizeOptions {
   gridWidth: number;
   gridHeight: number;
-  /** Font units covered by one grid cell. */
+  /** Font units covered by one grid cell (the pixel size). */
   unitsPerCell: number;
-  /** X of the grid's left edge in font units. */
+  /** X (font units) of the left edge of column 0. */
   offsetX: number;
-  /** Grid row (from bottom) where the baseline (y=0) sits. */
+  /** Grid row (from the bottom) on which the baseline (y = 0) sits. */
   baselineRow: number;
   /**
-   * Probe grid per cell axis (default 3 → 9 probes per cell). Coverage
-   * sampling keeps features thinner than one cell — hairlines, underscores,
-   * minus signs, thin serifs — visible instead of letting them fall between
-   * single centre probes and disappear.
+   * Ink fraction needed to light a cell (default 0.5 = majority coverage).
+   * 0.5 is a box filter: it keeps the rendered stroke weight of the original.
    */
-  samplesPerCell?: number;
-  /**
-   * How many probes must fall inside the outline for the cell to light
-   * (default 2 of 9 ≈ 22% coverage: thin strokes survive, single-probe
-   * noise at anti-aliased edges does not).
-   */
-  minSamples?: number;
+  threshold?: number;
+  /** Curve flattening tolerance, in font units (default: cell / 32). */
+  tolerance?: number;
 }
 
-/** Probe offsets inside a cell for `samples` subdivisions (0..1, centred). */
-function probeOffsets(samples: number): number[] {
-  const out: number[] = [];
-  const step = 1 / samples;
-  for (let i = 0; i < samples; i++) out.push((i + 0.5) * step);
+// ---------------------------------------------------------------------------
+// Outline flattening
+// ---------------------------------------------------------------------------
+
+/** Flat closed polygon: [x0, y0, x1, y1, ...]. */
+export type Poly = number[];
+
+/** Max distance between a quadratic and its chord. */
+function quadDeviation(fromX: number, fromY: number, cx: number, cy: number, toX: number, toY: number): number {
+  // B(t) − chord(t) = −t(1−t)·(P0 − 2P1 + P2); the maximum is at t = ½.
+  const ax = fromX - 2 * cx + toX;
+  const ay = fromY - 2 * cy + toY;
+  return Math.hypot(ax, ay) / 4;
+}
+
+/** Flatten one contour into a closed polygon with a chord tolerance. */
+export function flattenContour(contour: Contour, tolerance: number): Poly {
+  const segs = contourToSegments(contour);
+  if (!segs.length) return [];
+  const tol = Math.max(1e-6, tolerance);
+  const out: Poly = [segs[0].from.x, segs[0].from.y];
+  for (const s of segs) {
+    if (!s.ctrl) {
+      out.push(s.to.x, s.to.y);
+      continue;
+    }
+    const dev = quadDeviation(s.from.x, s.from.y, s.ctrl.x, s.ctrl.y, s.to.x, s.to.y);
+    // deviation of a curve split into n pieces is ≈ dev / n²
+    const steps = dev > tol ? Math.min(64, Math.max(2, Math.ceil(Math.sqrt(dev / tol)))) : 1;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const mt = 1 - t;
+      out.push(
+        mt * mt * s.from.x + 2 * mt * t * s.ctrl!.x + t * t * s.to.x,
+        mt * mt * s.from.y + 2 * mt * t * s.ctrl!.y + t * t * s.to.y,
+      );
+    }
+  }
+  const n = out.length / 2;
+  if (n >= 3 && out[0] === out[out.length - 2] && out[1] === out[out.length - 1]) out.length -= 2;
+  return out.length >= 6 ? out : [];
+}
+
+/** Flatten every contour; degenerate ones are dropped. */
+export function flattenContours(contours: Contour[], tolerance: number): Poly[] {
+  const out: Poly[] = [];
+  for (const c of contours) {
+    const p = flattenContour(c, tolerance);
+    if (p.length >= 6) out.push(p);
+  }
   return out;
 }
 
-/** Rasterize into a fresh Bitmap (shared by the public helpers). */
-function rasterizeToBitmap(contours: Contour[], opts: RasterizeOptions): Bitmap {
-  const bm = new Bitmap(opts.gridWidth, opts.gridHeight);
-  // 3 probes per axis is the default; the no-vanishing retry asks for far more
-  // (up to 128) to reach ink that is thinner than a cell.
-  const samples = Math.max(1, Math.min(128, Math.floor(opts.samplesPerCell ?? 3)));
-  // default: ~22% coverage — thin strokes survive, single-probe noise does not
-  const minSamples = Math.max(1, Math.floor(opts.minSamples ?? 2));
-  if (contours.length) {
-    const inside = createWindingTester(contours);
-    const offs = probeOffsets(samples);
-    const { unitsPerCell: u, offsetX, baselineRow } = opts;
-    for (let y = 0; y < opts.gridHeight; y++) {
-      for (let x = 0; x < opts.gridWidth; x++) {
-        let hits = 0;
-        for (let sy = 0; sy < samples && hits < minSamples; sy++) {
-          const py = (y + offs[sy] - baselineRow) * u;
-          for (let sx = 0; sx < samples; sx++) {
-            if (inside(offsetX + (x + offs[sx]) * u, py) !== 0) {
-              hits += 1;
-              if (hits >= minSamples) break;
-            }
-          }
+// ---------------------------------------------------------------------------
+// Polygon clipping (Sutherland–Hodgman) and signed area
+// ---------------------------------------------------------------------------
+
+/** Clip a polygon against the half-plane `nx·x + ny·y ≥ c`. */
+export function clipHalfPlane(src: Poly, nx: number, ny: number, c: number): Poly {
+  const n = src.length / 2;
+  if (n < 3) return [];
+  const out: Poly = [];
+  let px = src[(n - 1) * 2];
+  let py = src[(n - 1) * 2 + 1];
+  let pd = nx * px + ny * py - c;
+  for (let i = 0; i < n; i++) {
+    const qx = src[i * 2];
+    const qy = src[i * 2 + 1];
+    const qd = nx * qx + ny * qy - c;
+    if (qd >= 0) {
+      if (pd < 0) {
+        const t = pd / (pd - qd);
+        out.push(px + t * (qx - px), py + t * (qy - py));
+      }
+      out.push(qx, qy);
+    } else if (pd >= 0) {
+      const t = pd / (pd - qd);
+      out.push(px + t * (qx - px), py + t * (qy - py));
+    }
+    px = qx;
+    py = qy;
+    pd = qd;
+  }
+  return out;
+}
+
+/** Signed area (shoelace) of a closed polygon; positive when counter-clockwise. */
+export function polyArea(p: Poly): number {
+  const n = p.length / 2;
+  if (n < 3) return 0;
+  let a = 0;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    a += p[i * 2] * p[j * 2 + 1] - p[j * 2] * p[i * 2 + 1];
+  }
+  return a / 2;
+}
+
+// ---------------------------------------------------------------------------
+// Exact coverage
+// ---------------------------------------------------------------------------
+
+/**
+ * Exact ink coverage (0..1) of every cell of the grid.
+ *
+ * Rows are clipped once against the outline (cheap) and then each column of
+ * that band is clipped separately, so the cost is O(rows·E + cells·E_band)
+ * rather than O(cells·E).
+ */
+export function rasterizeCoverage(contours: Contour[], opts: RasterizeOptions): Float64Array {
+  const { gridWidth: W, gridHeight: H, unitsPerCell: u, offsetX, baselineRow } = opts;
+  const cov = new Float64Array(W * H);
+  if (!contours.length || W <= 0 || H <= 0 || !(u > 0)) return cov;
+  const polys = flattenContours(contours, opts.tolerance ?? u / 32);
+  if (!polys.length) return cov;
+  const cellArea = u * u;
+  // TrueType draws outer contours clockwise and counters the other way, so a
+  // glyph's signed area can come out negative. The non-zero fill rule only
+  // cares that counters cancel outer areas, not which sign that happens in —
+  // normalize the winding once, per glyph, instead of per cell.
+  let total = 0;
+  for (const p of polys) total += polyArea(p);
+  const sign = total < 0 ? -1 : 1;
+
+  for (let row = 0; row < H; row++) {
+    const yA = (row - baselineRow) * u;
+    const yB = yA + u;
+    // 1. clip every contour to this horizontal band
+    const bands: Poly[] = [];
+    let bx0 = Infinity;
+    let bx1 = -Infinity;
+    for (const poly of polys) {
+      let p = clipHalfPlane(poly, 0, 1, yA);
+      if (p.length < 6) continue;
+      p = clipHalfPlane(p, 0, -1, -yB);
+      if (p.length < 6) continue;
+      bands.push(p);
+      for (let i = 0; i < p.length; i += 2) {
+        if (p[i] < bx0) bx0 = p[i];
+        if (p[i] > bx1) bx1 = p[i];
+      }
+    }
+    if (!bands.length) continue;
+    // 2. only the columns the band actually reaches can hold ink
+    let c0 = Math.floor((bx0 - offsetX) / u);
+    let c1 = Math.floor((bx1 - offsetX) / u);
+    if (c1 < 0 || c0 >= W) continue;
+    if (c0 < 0) c0 = 0;
+    if (c1 > W - 1) c1 = W - 1;
+    for (let col = c0; col <= c1; col++) {
+      const xA = offsetX + col * u;
+      const xB = xA + u;
+      let area = 0;
+      for (const band of bands) {
+        let p = clipHalfPlane(band, 1, 0, xA);
+        if (p.length < 6) continue;
+        p = clipHalfPlane(p, -1, 0, -xB);
+        if (p.length < 6) continue;
+        area += polyArea(p);
+      }
+      if (area !== 0) cov[row * W + col] += (area / cellArea) * sign;
+    }
+  }
+  // overlapping same-direction contours could overshoot; the fill is 0..1
+  for (let i = 0; i < cov.length; i++) {
+    if (cov[i] < 0) cov[i] = 0;
+    else if (cov[i] > 1) cov[i] = 1;
+  }
+  return cov;
+}
+
+export interface CoverageStats {
+  /** Total ink area, in cells. */
+  ink: number;
+  /** Lit cells after thresholding. */
+  lit: number;
+  /** True when the rescue rule had to fire (ink thinner than half a cell). */
+  rescued: boolean;
+  /**
+   * Graininess of the fit: the share of the ink that is *not* cleanly resolved
+   * (0 = every cell is either empty or completely full). Used to recognise
+   * genuine pixel fonts.
+   */
+  grayness: number;
+}
+
+/**
+ * Turn coverage into a bitmap.
+ *
+ * A cell lights at `threshold` coverage — a box filter, so the downsampled
+ * glyph keeps the weight of the original. If *nothing* reaches the threshold
+ * but the glyph does have ink (a hairline thinner than half a cell), the
+ * best-covered cells light anyway: a glyph must never silently disappear.
+ */
+export function coverageToBitmap(
+  cov: Float64Array,
+  width: number,
+  height: number,
+  threshold = 0.5,
+): { bitmap: Bitmap; stats: CoverageStats } {
+  const bm = new Bitmap(Math.max(1, width), Math.max(1, height));
+  let ink = 0;
+  let maxCov = 0;
+  let gray = 0;
+  for (let i = 0; i < cov.length; i++) {
+    const c = cov[i];
+    if (c <= 0) continue;
+    ink += c;
+    gray += Math.min(c, 1 - c);
+    if (c > maxCov) maxCov = c;
+  }
+  const grayness = ink > 0 ? gray / ink : 0;
+  if (ink === 0) return { bitmap: bm, stats: { ink: 0, lit: 0, rescued: false, grayness: 0 } };
+
+  let lit = 0;
+  if (maxCov >= threshold) {
+    for (let y = 0; y < bm.height; y++) {
+      for (let x = 0; x < bm.width; x++) {
+        if (cov[y * bm.width + x] >= threshold) {
+          bm.set(x, y, 1);
+          lit++;
         }
-        if (hits >= minSamples) bm.set(x, y, 1);
+      }
+    }
+    return { bitmap: bm, stats: { ink, lit, rescued: false, grayness } };
+  }
+  // thin-feature rescue: keep the most covered cells so the ink is represented
+  const cut = maxCov * 0.6;
+  for (let y = 0; y < bm.height; y++) {
+    for (let x = 0; x < bm.width; x++) {
+      if (cov[y * bm.width + x] >= cut) {
+        bm.set(x, y, 1);
+        lit++;
       }
     }
   }
-  return bm;
+  return { bitmap: bm, stats: { ink, lit, rescued: true, grayness } };
+}
+
+/** Rasterize into a fresh Bitmap (shared by the public helpers). */
+function rasterizeToBitmap(
+  contours: Contour[],
+  opts: RasterizeOptions,
+): { bitmap: Bitmap; stats: CoverageStats } {
+  const cov = rasterizeCoverage(contours, opts);
+  return coverageToBitmap(cov, opts.gridWidth, opts.gridHeight, opts.threshold ?? 0.5);
 }
 
 /**
@@ -71,74 +302,63 @@ function rasterizeToBitmap(contours: Contour[], opts: RasterizeOptions): Bitmap 
  * Returns the bitmap plus the full PixelData placement.
  */
 export function rasterizeContours(contours: Contour[], opts: RasterizeOptions): PixelData {
-  const bm = rasterizeToBitmap(contours, opts);
+  const { bitmap } = rasterizeToBitmap(contours, opts);
   return {
     width: opts.gridWidth,
     height: opts.gridHeight,
-    cellsB64: bm.toB64(),
+    cellsB64: bitmap.toB64(),
     unitsPerCell: opts.unitsPerCell,
     offsetX: opts.offsetX,
     baselineRow: opts.baselineRow,
   };
 }
 
-function litCount(pixel: PixelData): number {
-  return Bitmap.fromB64(pixel.width, pixel.height, pixel.cellsB64).count();
+/** Detailed result of one glyph rasterization. */
+export interface GlyphRaster {
+  pixel: PixelData;
+  bitmap: Bitmap;
+  stats: CoverageStats;
+}
+
+/** Rasterize and also report coverage statistics (used by the converters). */
+export function rasterizeDetailed(contours: Contour[], opts: RasterizeOptions): GlyphRaster {
+  const { bitmap, stats } = rasterizeToBitmap(contours, opts);
+  return {
+    pixel: {
+      width: opts.gridWidth,
+      height: opts.gridHeight,
+      cellsB64: bitmap.toB64(),
+      unitsPerCell: opts.unitsPerCell,
+      offsetX: opts.offsetX,
+      baselineRow: opts.baselineRow,
+    },
+    bitmap,
+    stats,
+  };
 }
 
 /**
- * Rasterize, but never let a glyph with ink come back empty: if the first pass
- * lights nothing (ink thinner than a probe spacing — hairlines, rules, stems),
- * the sampling is repeated with denser probe grids until something appears.
+ * Backwards-compatible alias.
  *
- * The last pass is sized from the ink itself (`cell / thinnest feature`), so a
- * 4-unit stem inside a 125-unit cell is still hit by a probe instead of falling
- * between all of them.
+ * The old name promised a "retry with denser probes"; coverage rasterization
+ * resolves thin ink on the first pass, so there is nothing left to retry — but
+ * the guarantee it existed for ("a glyph with ink never comes back empty") is
+ * now built into `coverageToBitmap`.
  */
 export function rasterizeContoursWithRetry(contours: Contour[], opts: RasterizeOptions): PixelData {
-  const first = rasterizeContours(contours, opts);
-  if (!contours.length || litCount(first) > 0) return first;
-  const bb = contourBoundsTight(contours);
-  if (!bb) return first;
-  const thin = Math.min(bb.xMax - bb.xMin, bb.yMax - bb.yMin);
-  const need = Math.ceil(Math.max(1e-6, opts.unitsPerCell) / Math.max(thin, 1e-6));
-  // probe finely enough that one lands inside the thinnest feature, but keep
-  // the total work bounded on large grids
-  const budget = Math.floor(Math.sqrt(4_000_000 / Math.max(1, opts.gridWidth * opts.gridHeight)));
-  const dense = Math.max(9, Math.min(128, need, budget));
-  for (const samplesPerCell of [5, 9, dense]) {
-    if (samplesPerCell <= 3) continue;
-    const retry = rasterizeContours(contours, { ...opts, samplesPerCell, minSamples: 1 });
-    if (litCount(retry) > 0) return retry;
-  }
-  return first;
+  return rasterizeContours(contours, opts);
 }
+
+// ---------------------------------------------------------------------------
+// Frame selection for a single glyph (no font context)
+// ---------------------------------------------------------------------------
 
 export interface GlyphRasterResult {
   /** The frame that was used, with the requested height (within grid limits). */
   frame: RasterizeOptions;
   pixel: PixelData;
-  /** True when the probe density was raised so that thin ink stayed visible. */
+  /** True when the thin-feature rescue had to light sub-threshold cells. */
   refined: boolean;
-}
-
-/**
- * Rasterize one glyph with the default frame for `gridHeight` rows.
- *
- * Guarantees that a glyph with ink never comes back empty: hairline stems
- * (thinner than a probe spacing) are re-sampled with a denser probe grid
- * until at least one cell lights, so nothing silently disappears.
- */
-export function rasterizeGlyphContours(
-  contours: Contour[],
-  metrics: { ascent: number; descent: number },
-  gridHeight: number,
-): GlyphRasterResult {
-  const frame = defaultRasterizeFrame(contours, metrics, gridHeight);
-  const plain = rasterizeContours(contours, frame);
-  if (!contours.length || litCount(plain) > 0) return { frame, pixel: plain, refined: false };
-  const pixel = rasterizeContoursWithRetry(contours, frame);
-  return { frame, pixel, refined: pixel !== plain };
 }
 
 /**
@@ -153,7 +373,8 @@ function pixelAlignedFrame(contours: Contour[], rows: number): RasterizeOptions 
   const bb = contourBoundsTight(contours);
   if (!bb || bb.yMax <= bb.yMin || bb.xMax <= bb.xMin) return null;
   const u = (bb.yMax - bb.yMin) / rows;
-  const onGrid = (v: number) => Math.abs(v - Math.round(v)) < 1e-7;
+  if (!(u > 0)) return null;
+  const onGrid = (v: number) => Math.abs(v - Math.round(v)) < 1e-6;
   for (const contour of contours) {
     for (let i = 0; i < contour.length; i++) {
       const p = contour[i];
@@ -175,23 +396,15 @@ function pixelAlignedFrame(contours: Contour[], rows: number): RasterizeOptions 
 }
 
 /**
- * Default rasterization frame for a glyph.
+ * Default rasterization frame for one glyph when no font-wide grid is known.
+ *
+ * The cell size is driven by the **larger** ink dimension, not by the ink
+ * height alone: sizing from the height made wide, flat glyphs (hyphen,
+ * underscore, macron, ogonek) produce cells far smaller than their own strokes
+ * and flood a grid dozens of columns wide.
  *
  * Pixel outlines that exactly fit the requested grid keep their native lattice
- * without padding, so 16px → 8px halves the strokes as well as the height.
- * Otherwise, the frame is derived from the glyph's own ink (not from the font's
- * ascent/descent): the requested number of rows spans the ink height plus one
- * cell of margin, so thin strokes stay a full cell wide and nothing is clipped
- * away by line metrics that do not bracket the drawing. The baseline is placed
- * on the nearest row boundary — which may lie outside the grid for glyphs that
- * sit far from it (underscores, apostrophes); that keeps their ink in view
- * instead of sampling empty space.
- *
- * The previous ascent→descent frame made every cell far larger than the
- * glyph's features: underscores, hyphens and hairlines fell between the
- * sampled cell centres and vanished, and for fonts whose hhea metrics do not
- * bracket the ink (tiny ascent, ink above the ascent) whole letters
- * disappeared.
+ * without padding, so 16px with 2px strokes becomes 8px with 1px strokes.
  */
 export function defaultRasterizeFrame(
   contours: Contour[],
@@ -208,34 +421,26 @@ export function defaultRasterizeFrame(
   }
   const inkH = Math.max(1e-6, bb.yMax - bb.yMin);
   const inkW = Math.max(0, bb.xMax - bb.xMin);
-  // Prefer a span that also contains the baseline: it keeps the baseline guide
-  // visible for glyphs that sit just below or above it (underscore, quotes,
-  // parentheses). Marks that live far from the baseline (accents, apostrophes)
-  // would need a grid mostly filled with empty rows, so those keep an
-  // ink-only span and simply record where the baseline is.
-  const spanWithBaseline = Math.max(bb.yMax, 0) - Math.min(bb.yMin, 0);
-  const withBaseline = spanWithBaseline <= inkH * 3;
-  const top = withBaseline ? Math.max(bb.yMax, 0) : bb.yMax;
-  const bottom = withBaseline ? Math.min(bb.yMin, 0) : bb.yMin;
-  // The row count is exactly what the user asked for: picking 8 rows must give
-  // an 8-row glyph. (Narrow tall glyphs such as l, I, i or | used to be given
-  // extra rows here, so at small heights they came out taller than the rest of
-  // the font.) Thin strokes that fall between the cell centres are still picked
-  // up by the denser re-sampling in rasterizeContoursWithRetry.
-  const rows = requested;
-  // rows cover the span plus one cell of margin (half a cell above and below)
-  let unitsPerCell = Math.max(1e-6, top - bottom) / (rows - 1);
-  // a very wide glyph must still fit the hard grid limit: coarsen the cells instead of clipping
-  if (inkW > 0) unitsPerCell = Math.max(unitsPerCell, inkW / (MAX_GRID - 1));
-  // baseline on a row boundary just below the span; it may sit outside the grid
+  // Keep the baseline in view for glyphs that sit just below or above it
+  // (underscore, quotes, parentheses). Marks that live far from the baseline
+  // (accents) would need a grid mostly filled with empty rows, so those keep
+  // an ink-only span and simply record where the baseline is.
+  const nearBaseline = (v: number) => Math.abs(v) <= inkH * 3;
+  const top = nearBaseline(bb.yMax) ? Math.max(bb.yMax, 0) : bb.yMax;
+  const bottom = nearBaseline(bb.yMin) ? Math.min(bb.yMin, 0) : bb.yMin;
+  const span = Math.max(1e-6, top - bottom);
+  // `rows - 2` cells carry the ink, leaving one cell of margin above and below
+  const inner = Math.max(1, requested - 2);
+  // the larger ink dimension decides the cell size, so flat glyphs stay narrow
+  let unitsPerCell = Math.max(span, inkW) / inner;
+  // a very wide glyph must still fit the hard grid limit: coarsen, never clip
+  if (inkW > 0) unitsPerCell = Math.max(unitsPerCell, inkW / (MAX_GRID - 2));
+  // baseline on a row boundary; it may sit outside the grid
   const baselineRow = Math.round(-bottom / unitsPerCell);
-  // left edge on a cell boundary at least half a cell left of the ink
-  const offsetX = Math.round(Math.floor((bb.xMin - unitsPerCell / 2) / unitsPerCell) * unitsPerCell);
-  // Enough columns to reach the right edge of the ink: the ink can start up to
-  // a cell right of offsetX, so deriving the width from the ink width alone can
-  // stop one column short (a hairline then falls outside the grid entirely).
-  const gridWidth = Math.max(1, Math.min(MAX_GRID, Math.ceil((bb.xMax - offsetX) / unitsPerCell)));
-  return { gridWidth, gridHeight: rows, unitsPerCell, offsetX, baselineRow };
+  // left edge on a cell boundary at least one cell left of the ink
+  const offsetX = Math.floor((bb.xMin - unitsPerCell) / unitsPerCell) * unitsPerCell;
+  const gridWidth = Math.max(1, Math.min(MAX_GRID, Math.ceil((bb.xMax - offsetX) / unitsPerCell) + 1));
+  return { gridWidth, gridHeight: requested, unitsPerCell, offsetX, baselineRow };
 }
 
 /** Frame covering the whole em (used when the glyph has no ink at all). */
@@ -245,4 +450,21 @@ function emFrame(metrics: { ascent: number; descent: number }, rows: number): Ra
   const baselineRow = Math.round(-metrics.descent / unitsPerCell);
   const gridWidth = Math.max(1, Math.min(MAX_GRID, 8));
   return { gridWidth, gridHeight: rows, unitsPerCell, offsetX: 0, baselineRow };
+}
+
+/**
+ * Rasterize one glyph with the default frame for `gridHeight` rows.
+ *
+ * Prefer `pixelGrid.pixelizeGlyph` when converting a whole font: that keeps
+ * one cell size and one baseline row for every glyph, which is what makes the
+ * converted font line up.
+ */
+export function rasterizeGlyphContours(
+  contours: Contour[],
+  metrics: { ascent: number; descent: number },
+  gridHeight: number,
+): GlyphRasterResult {
+  const frame = defaultRasterizeFrame(contours, metrics, gridHeight);
+  const { pixel, stats } = rasterizeDetailed(contours, frame);
+  return { frame, pixel, refined: stats.rescued };
 }

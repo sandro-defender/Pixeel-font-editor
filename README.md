@@ -11,16 +11,43 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | Area | What you can do |
 | --- | --- |
 | Workspaces | Two independent fonts (Font A / Font B), side-by-side comparison, per-font export |
-| Import | `.ttf` via file picker or drag & drop (`.otf`/CFF is converted to quadratic curves) |
+| Import | `.ttf` via file picker or drag & drop (`.otf`/CFF is converted to quadratic curves); **pixel fonts are detected** — the importer finds the cell size at which every outline lands on the lattice and offers a lossless conversion |
 | Glyph browser | Searchable grid with previews, Unicode values and names; create / duplicate / delete; re-assign Unicode with conflict validation; `.notdef` is always preserved; unmapped glyphs are visually distinct |
 | Pixel editor | 8×8, 16×16, 32×32 or custom grids (≤128); pencil, eraser, fill, line, rectangle, selection; copy/cut/paste/move; shift, flip, rotate, invert, clear; undo/redo; zoom with grid lines; **keyboard cursor** (arrows move it, Space paints, Shift+Space erases, T toggles); **hover coordinate readout** and **index rulers**; **right-drag erases**; reference overlay for tracing; touch/pointer drawing; live actual-size + enlarged previews; baseline/ascent/descent/origin/advance guides; explicit crop/pad vs resample when resizing a grid; text-art and LED column-byte entry (*Pixel code…*) |
 | LED matrix fonts | Optional exact-pixel mode per font: fixed grid height, one integer unit size per lit pixel, glyph origins on whole-pixel boundaries, advance = (width + spacing) × pixel size; an LED dot preview; *Snap to LED grid* for vector glyphs; export checks that verify every glyph (errors for off-grid data, warnings for advances) |
-| Outline editor | Imported vector glyphs keep their original outlines; select contours & points, move points, reverse or delete contours; edit advance width and side bearings; composite glyphs detected and preserved (or explicitly flattened); explicit "convert to pixels" with preview and loss-of-detail warning; revert to the original outline |
+| Outline editor | Imported vector glyphs keep their original outlines; select contours & points, move points, reverse or delete contours; edit advance width and side bearings; composite glyphs detected and preserved (or explicitly flattened); **convert to pixels** for one glyph or the whole font, on one shared grid (see [Converting a font to pixels](#converting-a-font-to-pixels)); revert to the original outline |
 | Transfer A↔B | **Copy** or **Move** one or many glyphs either direction (Move removes them from the source after copying; `.notdef` is never removed; skipped glyphs stay put); drag glyph cards onto the A/B tabs; preserve source metrics or adapt; optional proportional scaling by units-per-em; baseline-aligned preview; collision handling (replace / skip / reassign); confirmation step; one undo step reverts both fonts for a move |
 | Metadata & licensing | Full name-table editor (family, style, full/PostScript name, version, author, copyright, description, manufacturer, URLs); license editor with custom text or the **official SIL OFL 1.1 template** (editable holder + Reserved Font Names); `LICENSE.txt` export; license embedded in the exported name table; imported copyright/license preserved by default and never replaced silently |
 | Preview | Live text preview rendered from the *currently edited* font (including unsaved changes), custom text/size/letter-spacing, samples for Latin, Georgian, numbers, punctuation |
 | Persistence | Project files (`.pixeel.json`) with both fonts + metadata + grids + settings; automatic IndexedDB recovery snapshot restored after refresh |
 | Export correctness | Real `glyf` TrueType outlines with correct cmap, metrics, names, bboxes and checksums; re-parse validation of every export; explicit report of preserved vs dropped tables |
+
+## Converting a font to pixels
+
+*Convert to pixel grid…* (Font menu, or the editor toolbar for a single glyph) rebuilds
+vector outlines as editable pixels. Two things make a converted font usable:
+
+1. **One grid for the whole font.** Every glyph is rasterized with the *same* cell size
+   and the *same* baseline phase, so an `i` and a `g` keep the same pixel size and still
+   sit on one line. (Sizing each glyph's frame from its own ink gave every glyph a
+   different cell size *and* baseline row — converted text no longer lined up.)
+2. **Exact coverage, majority threshold.** The ink fraction of every cell is computed
+   exactly (the outline is clipped against the cell rectangle), and a cell lights at 50 %
+   coverage — a box filter, so stroke weight survives the downsample. Probe sampling is
+   gone: it let a 20 %-covered cell light while a 60 %-covered one stayed dark.
+
+**Pixel-font detection.** For a "true" pixel font there is one cell size at which every
+outline coordinate lands on the lattice and every cell is either completely empty or
+completely full — no intermediate grays. The converter searches the coordinate lattice
+(GCD of the outline differences, plus every "N rows tall" size), then verifies the
+candidate by measuring how much of the ink is *not* cleanly resolved. When a font has
+such a size (grayness ≈ 0) the conversion at that size is **lossless** and the dialog
+says so; importing a pixel font also offers it straight away. Anything else is reported
+as a downsample and you pick the grid height.
+
+Glyphs keep their original outline in `sourceContours`, so *Revert to original outline*
+still works, and advance widths are snapped to whole pixels by default — otherwise text
+set in the converted font drifts off the lattice and the crisp rendering is lost again.
 
 ## Technology & font engine
 
@@ -209,7 +236,7 @@ Use **Shift+arrows** for that.
 ## Repository layout
 
 ```
-src/core/       font model, bitmap engine, contour tracer, TTF codec, licensing
+src/core/       font model, bitmap engine, contour tracer, pixel-grid/rasterizer, TTF codec, licensing
 src/state/      zustand store (undo/redo history), glyph mutators
 src/services/   worker client, preview fonts, persistence, file actions
 src/workers/    export/preview web worker

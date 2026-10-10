@@ -1,9 +1,22 @@
 /** File-level actions shared between the top bar, drag & drop and dialogs. */
 import { useStore } from '../state/store';
 import type { FontDoc, Slot } from '../core/types';
-import { importFont } from '../core/fontCodec';
+import { importFont, resolveGlyphContours } from '../core/fontCodec';
+import { detectFontPixelGrid } from '../core/pixelGrid';
 import { dropSource, downloadProjectFile, parseProjectFile, projectFileName, registerImportedSource } from './persistence';
 import { releasePreview } from './previewFont';
+
+/**
+ * Detect the native pixel grid of an imported font, if it has one.
+ * Never throws: a failed detection just means "not a pixel font".
+ */
+function detectImportedPixelGrid(doc: FontDoc) {
+  try {
+    return detectFontPixelGrid(doc, (g) => resolveGlyphContours(g, doc.glyphs));
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Ask before anything replaces unsaved work. Resolves true when it is safe to
@@ -67,6 +80,19 @@ export async function importFontFile(slot: Slot, file: File): Promise<void> {
     releaseSourcesNotIn(before, [useStore.getState().fonts.A, useStore.getState().fonts.B]);
     current.toast('success', `Imported “${doc.meta.fontFamily}” (${doc.glyphs.length} glyphs) into Font ${slot}.`);
     warnings.forEach((w) => current.toast('warning', w));
+
+    // PixelForge-style importer: when the font really is a pixel font there is
+    // one cell size at which every cell is either empty or completely full.
+    // Offer the lossless conversion instead of leaving the outlines untouched.
+    const found = detectImportedPixelGrid(imported);
+    if (found?.found && found.grid) {
+      const grid = found.grid;
+      current.toast(
+        'info',
+        `“${doc.meta.fontFamily}” is a pixel font: a ${grid.rows}-row grid of ${Math.round(grid.unitsPerCell * 100) / 100} units per pixel fits every outline exactly. Convert it to keep editing pixels.`,
+      );
+      useStore.getState().openModal({ type: 'rasterize', slot, scope: 'font' });
+    }
   } catch (err) {
     useStore.getState().toast('error', `Import failed: ${err instanceof Error ? err.message : String(err)}`);
   } finally {

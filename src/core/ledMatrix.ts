@@ -260,15 +260,13 @@ export function conformGlyphToLed(g: GlyphDoc, spec: LedMatrixSpec, contoursOf: 
     width = Math.max(1, Math.min(LED_MAX_CELLS, col1 - col0));
     offsetX = col0 * u;
     // majority coverage keeps the LED pixels clean at this resolution; the
-    // retry inside guarantees ink thinner than a cell still shows up
+    // thin-ink rescue inside guarantees hairlines still show up
     const pixel = rasterizeContoursWithRetry(scaled, {
       gridWidth: width,
       gridHeight: spec.rows,
       unitsPerCell: u,
       offsetX,
       baselineRow: spec.descentRows,
-      samplesPerCell: 2,
-      minSamples: 2,
     });
     cellsB64 = pixel.cellsB64;
     sourceContours = g.sourceContours ?? contours.map((c) => c.map((p) => ({ ...p })));

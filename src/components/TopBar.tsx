@@ -13,6 +13,7 @@ import RedoIcon from '@mui/icons-material/Redo';
 import DarkModeOutlinedIcon from '@mui/icons-material/DarkModeOutlined';
 import LightModeOutlinedIcon from '@mui/icons-material/LightModeOutlined';
 import HelpOutlineIcon from '@mui/icons-material/Help';
+import GridOnIcon from '@mui/icons-material/GridOn';
 import { useStore, workspaceName } from '../state/store';
 import type { Slot } from '../core/types';
 import { importFontFile, openProjectFile, saveProjectFile } from '../services/fileActions';
@@ -174,6 +175,10 @@ export function TopBar() {
             <MenuItem key="led" disabled={!doc} onClick={() => { close(); openModal({ type: 'ledMatrix', slot: active }); }}>
               <ListItemIcon><LightbulbOutlinedIcon fontSize="small" /></ListItemIcon>
               <ListItemText primary={doc?.ledMatrix ? 'LED matrix (on)…' : 'LED matrix…'} secondary="Exact-pixel mode" />
+            </MenuItem>,
+            <MenuItem key="raster" disabled={!doc} onClick={() => { close(); openModal({ type: 'rasterize', slot: active, scope: 'font' }); }}>
+              <ListItemIcon><GridOnIcon fontSize="small" /></ListItemIcon>
+              <ListItemText primary="Convert to pixel grid…" secondary="Whole font on one grid" />
             </MenuItem>,
           ]}
         </MenuButton>
