@@ -115,7 +115,7 @@ export function rasterizeContoursWithRetry(contours: Contour[], opts: RasterizeO
 }
 
 export interface GlyphRasterResult {
-  /** The frame that was used (its height may exceed the request for hairline glyphs). */
+  /** The frame that was used, with the requested height (within grid limits). */
   frame: RasterizeOptions;
   pixel: PixelData;
   /** True when the probe density was raised so that thin ink stayed visible. */
@@ -142,9 +142,44 @@ export function rasterizeGlyphContours(
 }
 
 /**
+ * Exported pixel fonts have straight, axis-aligned edges on a square lattice.
+ * When that lattice fits the requested height exactly, keep its phase and
+ * scale instead of adding the margin used for arbitrary vector outlines.
+ * Otherwise an 8-row design is squeezed into 7 rows and its one-cell strokes
+ * straddle neighbouring cells. Test every edge (including closing edges), not
+ * just the bounds: curved or off-grid outlines still use coverage sampling.
+ */
+function pixelAlignedFrame(contours: Contour[], rows: number): RasterizeOptions | null {
+  const bb = contourBoundsTight(contours);
+  if (!bb || bb.yMax <= bb.yMin || bb.xMax <= bb.xMin) return null;
+  const u = (bb.yMax - bb.yMin) / rows;
+  const onGrid = (v: number) => Math.abs(v - Math.round(v)) < 1e-7;
+  for (const contour of contours) {
+    for (let i = 0; i < contour.length; i++) {
+      const p = contour[i];
+      const next = contour[(i + 1) % contour.length];
+      if (!p.onCurve || (p.x !== next.x && p.y !== next.y) ||
+          !onGrid((p.x - bb.xMin) / u) || !onGrid((p.y - bb.yMin) / u)) return null;
+    }
+  }
+  const width = Math.round((bb.xMax - bb.xMin) / u);
+  if (width < 1 || width > MAX_GRID) return null;
+  return {
+    gridWidth: width,
+    gridHeight: rows,
+    unitsPerCell: u,
+    offsetX: bb.xMin,
+    // Preserve placement even for shifted outlines / fractional font units.
+    baselineRow: -bb.yMin / u,
+  };
+}
+
+/**
  * Default rasterization frame for a glyph.
  *
- * The frame is derived from the glyph's own ink (not from the font's
+ * Pixel outlines that exactly fit the requested grid keep their native lattice
+ * without padding, so 16px → 8px halves the strokes as well as the height.
+ * Otherwise, the frame is derived from the glyph's own ink (not from the font's
  * ascent/descent): the requested number of rows spans the ink height plus one
  * cell of margin, so thin strokes stay a full cell wide and nothing is clipped
  * away by line metrics that do not bracket the drawing. The baseline is placed
@@ -164,6 +199,8 @@ export function defaultRasterizeFrame(
   gridHeight: number,
 ): RasterizeOptions {
   const requested = Math.max(2, Math.min(MAX_GRID, Math.round(gridHeight)));
+  const aligned = pixelAlignedFrame(contours, requested);
+  if (aligned) return aligned;
   const bb = contourBoundsTight(contours);
   if (!bb) {
     // nothing to draw (space, .notdef): fall back to the font's line metrics

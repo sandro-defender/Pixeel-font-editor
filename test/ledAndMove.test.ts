@@ -90,6 +90,40 @@ describe('LED matrix fonts', () => {
     expect(g.pixel).toBeTruthy();
   });
 
+  it('scales 16-row LED glyphs to 8 rows instead of cropping two-pixel strokes', () => {
+    const smallSpec = normalizeLedSpec({ rows: 8, cols: 6, spacing: 1, cellUnits: 100, descentRows: 2 });
+    const bigSpec = { ...smallSpec, rows: 16, cols: 12, descentRows: 4 };
+    let doc = createNewFont({ familyName: 'Scale', styleName: 'Regular', gridWidth: 12, gridHeight: 16, led: bigSpec });
+    const small = asciiToBitmap('.####.\n#....#\n#....#\n#....#\n#....#\n#....#\n#....#\n.####.').bitmap;
+    doc = drawGlyph(doc, 65, () => {}).doc;
+    const a = doc.glyphs.find((g) => g.unicode === 65)!;
+    doc = setGlyphBitmap(doc, a.id, small.resized(12, 16, 'resample'));
+    // Keep an edited pixel design (do not rebuild from a stale source outline).
+    doc = { ...doc, glyphs: doc.glyphs.map((g) => g.id === a.id ? {
+      ...g, pixel: { ...g.pixel!, offsetX: -200 }, sourceContours: [],
+    } : g) };
+    const reduced = applyLedMatrix(doc, smallSpec);
+    const glyph = reduced.glyphs.find((g) => g.id === a.id)!;
+    expect(Bitmap.fromB64(glyph.pixel!.width, glyph.pixel!.height, glyph.pixel!.cellsB64).equals(small)).toBe(true);
+    expect(glyph.pixel!.offsetX).toBe(-100);
+    expect(glyph.pixel!.baselineRow).toBe(2);
+    expect(glyph.advanceWidth).toBe(700);
+    expect(checkLedFont(reduced).errors).toBe(0);
+    // Returning to 16px restores the doubled bitmap, with no accumulated crop.
+    const enlarged = applyLedMatrix(reduced, bigSpec).glyphs.find((g) => g.id === a.id)!;
+    expect(enlarged.pixel).toEqual(doc.glyphs.find((g) => g.id === a.id)!.pixel);
+  });
+
+  it('keeps LED pixels unchanged when only units per cell or spacing changes', () => {
+    const doc = drawGlyph(ledFont(), 65, (bm) => bm.rect(0, 0, 4, 6, 1, false)).doc;
+    const changed = applyLedMatrix(doc, { ...SPEC, cellUnits: 200, spacing: 2 });
+    const before = doc.glyphs.find((g) => g.unicode === 65)!;
+    const after = changed.glyphs.find((g) => g.unicode === 65)!;
+    expect(after.pixel!.cellsB64).toBe(before.pixel!.cellsB64);
+    expect(after.pixel!.width).toBe(before.pixel!.width);
+    expect(checkLedFont(changed).errors).toBe(0);
+  });
+
   it('snaps a single glyph onto the grid without touching the others', () => {
     const doc = ledFont();
     const { doc: withA, glyph: a } = drawGlyph(doc, 65, (bm) => bm.set(0, 0, 1));

@@ -147,7 +147,7 @@ function contoursIn(doc: FontDoc): (g: GlyphDoc) => Contour[] {
  * mode was enabled is used, so re-snapping a single glyph still lands on the
  * same scale as the bulk conversion.
  */
-function ledScaleFor(doc: FontDoc, spec: LedMatrixSpec): number {
+export function ledScaleFor(doc: FontDoc, spec: LedMatrixSpec): number {
   // The design recorded when LED mode was enabled is the reference — after a
   // conversion the font's own metrics are the matrix's, so they would map the
   // design 1:1 and undo the fitting.
@@ -159,7 +159,8 @@ function ledScaleFor(doc: FontDoc, spec: LedMatrixSpec): number {
 /**
  * Turn a font into an LED matrix (exact-pixel) font, or switch LED mode off
  * (`null` keeps all glyph data and metrics as they are).
- * Turning it on snaps every glyph to the matrix: pixel grids are re-anchored,
+ * Turning it on snaps every glyph to the matrix: pixel grids are re-anchored
+ * (and proportionally resampled when an existing matrix's height changes),
  * vector outlines are scaled onto the matrix and rasterized, and metrics
  * become whole pixels.
  */
@@ -168,7 +169,10 @@ export function applyLedMatrix(doc: FontDoc, spec: LedMatrixSpec | null): FontDo
   const s = normalizeLedSpec(spec);
   const contoursOf = contoursIn(doc);
   const scale = ledScaleFor(doc, s);
-  const glyphs = doc.glyphs.map((g) => (g.name === '.notdef' ? g : conformGlyphToLed(g, s, contoursOf, { scale })));
+  // A smaller matrix is a smaller rendition, not a crop of the old glyph.
+  // Scale current pixels rather than sourceContours so edits survive resizing.
+  const pixelScale = doc.ledMatrix ? s.rows / doc.ledMatrix.rows : undefined;
+  const glyphs = doc.glyphs.map((g) => (g.name === '.notdef' ? g : conformGlyphToLed(g, s, contoursOf, { scale, pixelScale })));
   // Remember the design so later single-glyph snaps use the same scale.
   const hasVector = doc.glyphs.some((g) => !g.pixel && (g.kind === 'vector' || g.kind === 'compound' || g.contours.length > 0));
   const ledSource = hasVector ? { span: designSpan(doc, contoursOf), ascent: doc.metrics.ascent, descent: doc.metrics.descent } : doc.ledSource ?? null;

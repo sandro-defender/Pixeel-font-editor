@@ -209,11 +209,13 @@ export interface LedConformOptions {
    * sampled band disappeared completely.
    */
   scale?: number;
+  /** Pixel-space scale when resizing an existing matrix; default 1 only re-anchors. */
+  pixelScale?: number;
 }
 
 /**
  * Snap one glyph onto the LED grid and return the updated glyph object.
- *  - pixel glyphs: rows are re-anchored to the matrix height and baseline,
+ *  - pixel glyphs: optionally resampled by `opts.pixelScale`, then re-anchored to the matrix height and baseline,
  *    cell size / baseline are set to the matrix, the origin is kept on a whole
  *    pixel boundary and the advance becomes (width + spacing) pixels.
  *  - vector / composite glyphs: rasterized onto the matrix (lossy), scaled by
@@ -235,9 +237,17 @@ export function conformGlyphToLed(g: GlyphDoc, spec: LedMatrixSpec, contoursOf: 
 
   if (g.pixel) {
     const old = Bitmap.fromB64(g.pixel.width, g.pixel.height, g.pixel.cellsB64);
-    const bm = reanchorRows(old, g.pixel.baselineRow, spec.rows, spec.descentRows);
+    const pixelScale = opts.pixelScale ?? 1;
+    const scaled = pixelScale === 1 ? old : old.resized(
+      Math.max(1, Math.min(MAX_GRID, Math.round(old.width * pixelScale))),
+      Math.max(1, Math.min(MAX_GRID, Math.round(old.height * pixelScale))),
+      'resample',
+    );
+    const bm = reanchorRows(scaled, Math.round(g.pixel.baselineRow * pixelScale), spec.rows, spec.descentRows);
     width = bm.width;
-    offsetX = Math.round(g.pixel.offsetX / u) * u;
+    offsetX = opts.pixelScale === undefined
+      ? Math.round(g.pixel.offsetX / u) * u
+      : Math.round(g.pixel.offsetX / g.pixel.unitsPerCell * pixelScale) * u;
     cellsB64 = bm.toB64();
   } else if (contours.length) {
     const scaled = scale === 1 ? contours : scaleContours(contours, scale);
