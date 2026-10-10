@@ -58,7 +58,7 @@ export function OnboardingPanel(props: { onDismiss: () => void }) {
   const steps = [
     {
       label: 'Create or open a font',
-      description: 'Start with File → New font (choose Standard or LED matrix) or drop a .ttf/.otf file anywhere.',
+      description: 'Start with File → New font (choose Standard or LED matrix) or drop a .ttf / .otf / .woff / .woff2 / .bdf file anywhere.',
       done: hasFont,
       action: () => openModal({ type: 'newFont' }),
       actionLabel: 'New font…',

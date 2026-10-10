@@ -1,4 +1,5 @@
 /** App header: brand, workspace tabs (Font A / Font B), file & font menus, undo/redo and theme. */
+import { FONT_FILE_ACCEPT } from '../core/fontFiles';
 import React, { useRef, useState } from 'react';
 import { AppBar, Badge, Box, Button, Divider, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Stack, Tab, Tabs, Toolbar, Tooltip, Typography } from '@mui/material';
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
@@ -159,7 +160,7 @@ export function TopBar(props: { onOpenPalette?: () => void }) {
             </MenuItem>,
             <MenuItem key="open" onClick={() => { close(); fileInputRef.current?.click(); }}>
               <ListItemIcon><FolderOpenIcon fontSize="small" /></ListItemIcon>
-              <ListItemText primary="Open font (.ttf / .otf)" secondary={`Into Font ${active}`} />
+              <ListItemText primary="Open font (.ttf .otf .woff .woff2 .bdf)" secondary={`Into Font ${active}`} />
             </MenuItem>,
             <MenuItem key="proj" onClick={() => { close(); projectInputRef.current?.click(); }}>
               <ListItemIcon><FolderOpenIcon fontSize="small" /></ListItemIcon>
@@ -244,7 +245,7 @@ export function TopBar(props: { onOpenPalette?: () => void }) {
         <input
           ref={fileInputRef}
           type="file"
-          accept=".ttf,.otf,font/ttf"
+          accept={FONT_FILE_ACCEPT}
           hidden
           aria-label="Open font file"
           onChange={(e) => {

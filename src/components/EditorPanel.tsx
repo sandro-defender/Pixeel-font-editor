@@ -52,7 +52,7 @@ export function EditorPanel(props: { slot: Slot }) {
 
   const hasOutline = glyph.contours.length > 0 || glyph.kind === 'vector' || glyph.kind === 'compound' || !!glyph.sourceContours;
   const explicit = choice && choice.glyphId === glyph.id ? choice.mode : null;
-  const mode: Mode = explicit ?? defaultMode(glyph, doc.source?.format === 'created');
+  const mode: Mode = explicit ?? defaultMode(glyph, doc.source?.format === 'created' || doc.source?.format === 'bdf');
   const setMode = (m: Mode) => setChoice({ glyphId: glyph.id, mode: m });
 
   const flatten = () => {

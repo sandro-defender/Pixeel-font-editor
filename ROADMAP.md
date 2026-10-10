@@ -128,14 +128,14 @@ Goal: Support complex font structures beyond one unicode per glyph.
 ## Step 5 — Import/Export Expansion
 Goal: Support more formats for broader adoption.
 
-### Slice 5.1 — WOFF/WOFF2 Import
+### Slice 5.1 — WOFF/WOFF2 Import ✅ done
 - **What:** Import WOFF and WOFF2 by decompressing client-side (using wasm or JS decoder), then feeding to existing TTF path. Error messages for failures.
 - **Acceptance:**
   - Drop .woff/.woff2 works.
   - No backend, fully client-side.
   - Tests with fixture.
 
-### Slice 5.2 — BDF & Bitmap Font Import
+### Slice 5.2 — BDF & Bitmap Font Import ✅ done
 - **What:** Import BDF (Glyph Bitmap Distribution Format) as pixel font, auto-detect cell size, preserve metrics.
 - **Acceptance:**
   - .bdf file picker and drop.
@@ -160,4 +160,4 @@ Goal: Support more formats for broader adoption.
 - Step 2: ✅ done (Symmetry & Mirroring, Tile Preview & Seamless, Magic Wand & Improved Fill)
 - Step 3: ✅ done (Visual Advance & Bearings Editor, Kerning Pairs Editor, Vertical Metrics Editor)
 - Step 4: ✅ done (Multi-Unicode Support, Composite Glyph Builder)
-- Step 5: ⬜ not started
+- Step 5: ✅ done (WOFF/WOFF2 Import, BDF Import)

@@ -13,7 +13,7 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | Area | What you can do |
 | --- | --- |
 | Workspaces | Two independent fonts (Font A / Font B), side-by-side comparison, per-font export |
-| Import | `.ttf` via file picker or drag & drop (`.otf`/CFF is converted to quadratic curves); **pixel fonts are detected** — the importer finds the cell size at which every outline lands on the lattice and offers a lossless conversion |
+| Import | `.ttf`, `.otf`, **`.woff`, `.woff2`** and **`.bdf`** via file picker or drag & drop (`.otf`/CFF is converted to quadratic curves; WOFF/WOFF2 are decompressed in your browser, no server; **BDF bitmap fonts open as editable pixel fonts** with the cell size, baseline and metrics detected); **pixel fonts are detected** — the importer finds the cell size at which every outline lands on the lattice and offers a lossless conversion |
 | Glyph browser | Searchable grid with previews, Unicode values and names; create / duplicate / delete; re-assign Unicode with conflict validation; `.notdef` is always preserved; unmapped glyphs are visually distinct; add the 33 modern Mkhedruli starter glyphs or all 172 assigned Georgian letters across Mkhedruli, Mtavruli, Asomtavruli and Nuskhuri |
 | Pixel editor | 8×8, 16×16, 32×32 or custom grids (≤128); pencil, eraser, fill, **magic wand (W)**, line, rectangle, selection; **symmetry modes** (H/V/quad/radial) with guides; **tile preview 3×3 + seamless**; copy/cut/paste/move; shift, flip, rotate, invert, clear; undo/redo; zoom with grid lines; **keyboard cursor** (arrows move it, Space paints, Shift+Space erases, T toggles); **hover coordinate readout** and **index rulers**; **right-drag erases**; reference overlay for tracing; touch/pointer drawing; live actual-size + enlarged previews; baseline/ascent/descent/origin/advance guides; explicit crop/pad vs resample when resizing a grid; text-art and LED column-byte entry (*Pixel code…*); **local glyph designer** with reference fonts, Georgian character sets, and width/height/weight/slant/position controls |
 | Reference fonts | Drop TTF/OTF examples into `public/fonts/` and index them with `npm run fonts:catalog` (production builds index automatically), or load a font file directly in the glyph designer; sample any supported letter/number and place the styled bitmap into the selected pixel glyph. Everything stays in the browser. |
@@ -163,7 +163,7 @@ npm run dev          # http://localhost:5173
 ### Tests
 
 ```bash
-npm test             # 313 unit/integration tests (vitest)
+npm test             # 346 unit/integration tests (vitest)
 npm run verify:pages # builds with a subpath base and serves it under /test-repo/
 ```
 
@@ -271,8 +271,25 @@ VITE_BASE_PATH=/my-subpath/ npm run build
 
 - **Import**: TrueType (`.ttf`, quadratic `glyf`) fully supported, including
   composite glyphs and hinting instructions. CFF-based OpenType (`.otf`) is
-  imported by converting cubics to quadratics (curve detail may change). WOFF/WOFF2
-  are rejected with an actionable message (convert to .ttf first).
+  imported by converting cubics to quadratics (curve detail may change).
+  The format is recognised from the file's first bytes, not its extension.
+  - **WOFF** is unpacked byte-exactly (every table comes back as it was, so
+    hinting and kerning survive). **WOFF2** is decompressed by the Brotli/WOFF2
+    WebAssembly decoder that ships with fonteditor-core; it is loaded only when
+    you open a `.woff2` and is served from your own site (no CDN, nothing leaves
+    the browser). Both are re-exported as a plain `.ttf` (the import notice says so).
+  - **BDF** (X11 bitmap fonts) becomes a pixel font: one BDF pixel = one editor
+    pixel, all glyphs share one grid that covers every glyph (an 8×16 font gets an
+    8×16 grid), `FONT_ASCENT`/`FONT_DESCENT` become the ascent/descent on a whole
+    baseline row (falling back to the font bounding box), `DWIDTH` becomes the
+    advance, negative offsets and glyphs reaching above/below the em box are kept,
+    `ENCODING` becomes the Unicode mapping (unencoded or repeated encodings stay
+    unmapped and are reported), and family/style/copyright come from the BDF
+    properties. Units per pixel are `1024 / em rows`.
+  - Clear errors: truncated or corrupt WOFF/WOFF2, `.ttc` collections, non-font
+    files, and broken BDF (the message names the glyph and the line).
+  - Not supported: `.ttc`/`.otc` collections, `.pcf`/`.fon` bitmap fonts, BDF glyphs
+    wider or taller than 128 pixels, vertical-writing BDF metrics.
 - **Export**: always a genuine `.ttf` with tables `head hhea maxp OS/2 name cmap
   post glyf loca hmtx` plus, when present in the source and enabled:
   `cvt /fpgm/prep/gasp` (hinting) and `GPOS/kern/kerx` (kerning).
@@ -354,6 +371,8 @@ Use **Shift+arrows** for that.
 
 ## Known limitations
 
+- WOFF/WOFF2 files are import-only: export always writes `.ttf`. Opening a `.woff2` downloads a ~340 KB (gzip) decoder on first use.
+- BDF import ignores `SWIDTH`/vertical metrics and non-Unicode charsets are read as Unicode (a warning is shown). Exporting a BDF-derived font produces scalable square-pixel outlines, not bitmap strikes.
 - cmap variation sequences (format 14) are not edited; only plain code point → glyph mappings are.
 - The composite builder edits offset and scale; a rotation/skew present in an imported component is kept but cannot be edited. LED matrix fonts cannot contain composites.
 - Units per em is read-only in the vertical metrics dialog. LED matrix fonts derive ascent/descent/line gap from the matrix, so those three are read-only there (typo and win values stay editable).
@@ -367,7 +386,7 @@ Use **Shift+arrows** for that.
 ## Repository layout
 
 ```
-src/core/       font model, bitmap engine, contour tracer, pixel-grid/rasterizer, TTF codec, licensing
+src/core/       font model, bitmap engine, contour tracer, pixel-grid/rasterizer, TTF codec, WOFF/WOFF2/BDF importers, licensing
 src/state/      zustand store (undo/redo history), glyph mutators
 src/services/   worker client, preview fonts, persistence, file actions, ESPHome package export
 src/workers/    export/preview web worker

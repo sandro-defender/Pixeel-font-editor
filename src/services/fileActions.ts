@@ -1,7 +1,9 @@
 /** File-level actions shared between the top bar, drag & drop and dialogs. */
+import { FONT_FILE_LABEL, FONT_FILE_RE } from '../core/fontFiles';
 import { useStore } from '../state/store';
 import type { FontDoc, Slot } from '../core/types';
-import { importFont, resolveGlyphContours } from '../core/fontCodec';
+import { resolveGlyphContours } from '../core/fontCodec';
+import { importAnyFont } from '../core/importAny';
 import { detectFontPixelGrid } from '../core/pixelGrid';
 import { dropSource, downloadProjectFile, parseProjectFile, projectFileName, registerImportedSource } from './persistence';
 import { releasePreview } from './previewFont';
@@ -63,14 +65,15 @@ export function saveProjectFile(): void {
 export async function importFontFile(slot: Slot, file: File): Promise<void> {
   const store = useStore.getState();
   if (store.fonts[slot] && !(await confirmDiscardChanges([slot], `Importing “${file.name}” into Font ${slot}`))) return;
-  if (!/\.(ttf|otf)$/i.test(file.name)) {
-    store.toast('warning', `“${file.name}” does not look like a TrueType or OpenType font (.ttf / .otf).`);
+  if (!FONT_FILE_RE.test(file.name)) {
+    // the content decides what it really is; the name only triggers a hint
+    store.toast('info', `“${file.name}” has an unusual extension (expected ${FONT_FILE_LABEL}); trying to read it anyway.`);
   }
   store.setBusy(`Reading ${file.name}…`);
   try {
     const buffer = await file.arrayBuffer();
-    const { doc, sourceTtf, warnings } = await importFont(buffer, file.name);
-    const ref = registerImportedSource(sourceTtf);
+    const { doc, sourceTtf, warnings, bdf } = await importAnyFont(buffer, file.name);
+    const ref = sourceTtf ? registerImportedSource(sourceTtf) : null; // BDF has no outline source to preserve
     const before = [useStore.getState().fonts.A, useStore.getState().fonts.B];
     const imported = { ...doc, sourceRef: ref };
     const current = useStore.getState();
@@ -78,13 +81,20 @@ export async function importFontFile(slot: Slot, file: File): Promise<void> {
     current.loadFont(slot, imported, file.name);
     current.setActive(slot);
     releaseSourcesNotIn(before, [useStore.getState().fonts.A, useStore.getState().fonts.B]);
-    current.toast('success', `Imported “${doc.meta.fontFamily}” (${doc.glyphs.length} glyphs) into Font ${slot}.`);
+    if (bdf) {
+      current.toast(
+        'success',
+        `Imported BDF “${doc.meta.fontFamily}” into Font ${slot} as a pixel font: ${bdf.cellWidth}×${bdf.cellHeight} px cells${bdf.monospaced ? ' (monospaced)' : ' (proportional)'}, ${bdf.baselineRow} row${bdf.baselineRow === 1 ? '' : 's'} below the baseline, ${bdf.glyphCount} glyphs.`,
+      );
+    } else {
+      current.toast('success', `Imported “${doc.meta.fontFamily}” (${doc.glyphs.length} glyphs) into Font ${slot}.`);
+    }
     warnings.forEach((w) => current.toast('warning', w));
 
     // PixelForge-style importer: when the font really is a pixel font there is
     // one cell size at which every cell is either empty or completely full.
     // Offer the lossless conversion instead of leaving the outlines untouched.
-    const found = detectImportedPixelGrid(imported);
+    const found = bdf ? null : detectImportedPixelGrid(imported);
     if (found?.found && found.grid) {
       const grid = found.grid;
       current.toast(
