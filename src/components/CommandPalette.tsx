@@ -1,4 +1,5 @@
 /** Command palette: Ctrl/Cmd+K fuzzy search over actions + glyph jump. */
+import { hasCodePoint } from '../core/unicodeMap';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import {
   Box,
@@ -32,6 +33,8 @@ import UndoIcon from '@mui/icons-material/Undo';
 import RedoIcon from '@mui/icons-material/Redo';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
 import ZoomInIcon from '@mui/icons-material/ZoomIn';
+import SpaceBarIcon from '@mui/icons-material/SpaceBar';
+import FormatLineSpacingIcon from '@mui/icons-material/FormatLineSpacing';
 import { useStore } from '../state/store';
 import type { Slot } from '../core/types';
 import { saveProjectFile } from '../services/fileActions';
@@ -182,6 +185,33 @@ export function useCommands(): Command[] {
         group: 'Font',
         disabled: !hasDoc,
         action: () => hasDoc && openModal({ type: 'ledMatrix', slot: active }),
+      },
+      {
+        id: 'unicode-mappings',
+        label: 'Unicode mappings…',
+        keywords: ['unicode', 'code point', 'cmap', 'mapping', 'alias', 'multiple'],
+        icon: <FormatLineSpacingIcon />,
+        group: 'Glyph',
+        disabled: !hasGlyph || glyph?.name === '.notdef',
+        action: () => hasGlyph && openModal({ type: 'unicodeMappings', slot: active, glyphId: ui.glyphId! }),
+      },
+      {
+        id: 'vertical-metrics',
+        label: 'Vertical metrics…',
+        keywords: ['vertical', 'metrics', 'ascent', 'descent', 'line gap', 'typo', 'win', 'line height', 'typography'],
+        icon: <FormatLineSpacingIcon />,
+        group: 'Font',
+        disabled: !hasDoc,
+        action: () => hasDoc && openModal({ type: 'verticalMetrics', slot: active }),
+      },
+      {
+        id: 'kerning',
+        label: 'Kerning pairs…',
+        keywords: ['kerning', 'kern', 'pairs', 'spacing', 'gpos', 'typography'],
+        icon: <SpaceBarIcon />,
+        group: 'Font',
+        disabled: !hasDoc,
+        action: () => hasDoc && openModal({ type: 'kerning', slot: active, left: hasGlyph ? ui.glyphId! : undefined }),
       },
       {
         id: 'rasterize-font',
@@ -338,12 +368,12 @@ export function CommandPalette(props: { open: boolean; onClose: () => void }) {
   const jumpCp = useMemo(() => parseGlyphJump(query), [query]);
   const jumpGlyphs = useMemo(() => {
     if (!doc || jumpCp === null) return [];
-    const exact = doc.glyphs.filter((g) => g.unicode === jumpCp);
+    const exact = doc.glyphs.filter((g) => hasCodePoint(g, jumpCp));
     if (exact.length) return exact;
     // if query is single char, also search by char
     if ([...query.trim()].length === 1) {
       const cp = query.trim().codePointAt(0)!;
-      return doc.glyphs.filter((g) => g.unicode === cp);
+      return doc.glyphs.filter((g) => hasCodePoint(g, cp));
     }
     return [];
   }, [doc, jumpCp, query]);

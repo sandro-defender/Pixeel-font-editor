@@ -47,6 +47,12 @@ export interface GlyphDoc {
   name: string;
   /** Assigned Unicode code point, or null when unmapped. */
   unicode: number | null;
+  /**
+   * Additional code points mapped to this glyph (several cmap entries → one glyph).
+   * `unicode` stays the primary mapping; this list never contains it, never has
+   * duplicates, and is empty/absent when `unicode` is null. See src/core/unicodeMap.ts.
+   */
+  extraUnicodes?: number[];
   advanceWidth: number;
   leftSideBearing: number;
   kind: GlyphKind;
@@ -67,11 +73,31 @@ export interface GlyphDoc {
   symmetry?: SymmetryMode;
 }
 
+/** A kerning pair (by glyph id): `value` font units are added after the left glyph. */
+export interface KerningPair {
+  left: string;
+  right: string;
+  value: number;
+}
+
 export interface FontMetrics {
   unitsPerEm: number;
   ascent: number;
   descent: number; // negative
   lineGap: number;
+  /**
+   * OS/2 vertical metrics. Optional: when absent they follow ascent / descent /
+   * lineGap (win values = ascent and −descent). Imported fonts keep their own.
+   */
+  typoAscender?: number;
+  typoDescender?: number; // usually negative
+  typoLineGap?: number;
+  /** usWinAscent: positive distance above the baseline (clipping limit on Windows). */
+  winAscent?: number;
+  /** usWinDescent: positive distance below the baseline. */
+  winDescent?: number;
+  /** OS/2 fsSelection bit 7: apps should use the typo metrics instead of hhea / win. */
+  useTypoMetrics?: boolean;
 }
 
 export interface FontMeta {
@@ -93,7 +119,9 @@ export interface FontMeta {
 
 export interface FontSourceInfo {
   fileName: string;
-  format: 'ttf' | 'otf' | 'created';
+  format: 'ttf' | 'otf' | 'bdf' | 'created';
+  /** Web-font wrapper the file came in (decompressed on import); absent for plain sfnt files. */
+  container?: 'woff' | 'woff2';
   /** Every table tag found in the original file. */
   tables: string[];
   hasHinting: boolean;
@@ -144,6 +172,17 @@ export interface FontDoc {
    * outlines have been replaced by pixels.
    */
   ledSource?: { span: number; ascent: number; descent: number } | null;
+  /**
+   * Editable kerning pairs, read from the source font's kern / GPOS tables on
+   * import. Undefined when the font has none that could be read.
+   */
+  kerning?: KerningPair[];
+  /**
+   * True once the pairs were changed in Pixeel (or glyph indices shifted):
+   * export then writes a fresh `kern` table from `kerning` instead of passing
+   * the source font's kern / GPOS tables through.
+   */
+  kerningEdited?: boolean;
 }
 
 export interface WorkspaceSettings {

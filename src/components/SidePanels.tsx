@@ -1,7 +1,8 @@
 /** Right-hand panels: metrics & tools, live preview, A/B comparison. */
+import { glyphForCodePoint, mappingCount } from '../core/unicodeMap';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '@mui/material/styles';
-import { Alert, Box, Button, Chip, Paper, Slider, Stack, TextField, Typography } from '@mui/material';
+import { Alert, Box, Button, Checkbox, Chip, FormControlLabel, Paper, Slider, Stack, TextField, Typography } from '@mui/material';
 import { useStore } from '../state/store';
 import type { FontDoc, GlyphDoc, Slot } from '../core/types';
 import { parseCodePointInput, describeCodePoint, SAMPLE_TEXTS } from '../core/unicodeNames';
@@ -9,6 +10,8 @@ import { drawGlyph } from '../render/glyphRender';
 import { previewFamily, rebuildPreview } from '../services/previewFont';
 import { assignUnicode, duplicateGlyph, removeGlyphs, renameGlyph, setAdvance, setLeftSideBearing } from '../state/glyphActions';
 import { Hint, Section } from './ui';
+import { computeRSB, glyphBoxWidth } from '../core/metrics';
+import { kernedRuns, kerningOf } from '../core/kerning';
 
 /** Whole-number font units; rejects blank and fractional input. */
 function parseUnits(text: string): number | null {
@@ -30,7 +33,7 @@ export function MetricsPanel(props: { slot: Slot }) {
   // keyed: switching glyphs (or any change to these values) starts the form from the stored values
   return (
     <GlyphForm
-      key={`${glyph.id}|${glyph.unicode}|${glyph.name}|${glyph.advanceWidth}|${glyph.leftSideBearing}`}
+      key={`${glyph.id}|${glyph.unicode}|${(glyph.extraUnicodes ?? []).join(',')}|${glyph.name}|${glyph.advanceWidth}|${glyph.leftSideBearing}`}
       slot={slot}
       glyph={glyph}
       doc={doc}
@@ -44,6 +47,12 @@ function GlyphForm(props: { slot: Slot; glyph: GlyphDoc; doc: FontDoc }) {
   const toast = useStore((s) => s.toast);
   const askConfirm = useStore((s) => s.askConfirm);
   const openModal = useStore((s) => s.openModal);
+  const snapToPixelGrid = useStore((s) => s.snapToPixelGrid);
+  const showBearingHandles = useStore((s) => s.showBearingHandles);
+  const setSnapToPixelGrid = useStore((s) => s.setSnapToPixelGrid);
+  const setBearingHandles = useStore((s) => s.setBearingHandles);
+  const liveAll = useStore((s) => s.liveMetrics);
+  const live = liveAll && liveAll.slot === slot && liveAll.glyphId === glyph.id ? liveAll : null;
 
   const [uniInput, setUniInput] = useState(glyph.unicode !== null ? 'U+' + glyph.unicode.toString(16).toUpperCase().padStart(4, '0') : '');
   const [nameInput, setNameInput] = useState(glyph.name);
@@ -114,12 +123,12 @@ function GlyphForm(props: { slot: Slot; glyph: GlyphDoc; doc: FontDoc }) {
       <Section title="Glyph metrics & tools">
         <Stack sx={{ alignItems: 'flex-start' }} direction="row" spacing={1}>
           <TextField
-            label="Unicode"
+            label={glyph.extraUnicodes?.length ? 'Primary Unicode' : 'Unicode'}
             value={uniInput}
             onChange={(e) => setUniInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && applyUnicode()}
             placeholder="e.g. U+0041"
-            helperText="Character, U+10D0, 0x41 or 65. Empty removes the mapping."
+            helperText={glyph.extraUnicodes?.length ? 'Character, U+10D0, 0x41 or 65. Empty removes ALL mappings of this glyph.' : 'Character, U+10D0, 0x41 or 65. Empty removes the mapping.'}
             slotProps={{ htmlInput: { 'aria-label': 'Unicode value' } }}
           />
           <Button onClick={applyUnicode} title="Apply the Unicode assignment (validated for conflicts)" sx={{ mt: 0.5 }}>
@@ -127,6 +136,11 @@ function GlyphForm(props: { slot: Slot; glyph: GlyphDoc; doc: FontDoc }) {
           </Button>
         </Stack>
         {glyph.unicode !== null && <Hint>{describeCodePoint(glyph.unicode)}</Hint>}
+        {glyph.name !== '.notdef' && (
+          <Button size="small" variant="outlined" onClick={() => openModal({ type: 'unicodeMappings', slot, glyphId: glyph.id })} title="Map several code points to this glyph, with conflict checks" sx={{ alignSelf: 'flex-start' }}>
+            {`Unicode mappings (${mappingCount(glyph)})…`}
+          </Button>
+        )}
         {glyph.name === '.notdef' && <Hint>.notdef is required and stays unmapped.</Hint>}
 
         <TextField
@@ -154,6 +168,28 @@ function GlyphForm(props: { slot: Slot; glyph: GlyphDoc; doc: FontDoc }) {
             onChange={(e) => setLsbInput(e.target.value)}
             helperText="Shifts glyph content"
             slotProps={{ htmlInput: { 'aria-label': 'Left side bearing', step: 1 } }}
+          />
+        </Stack>
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap aria-live="polite">
+          <Chip
+            size="small"
+            variant="outlined"
+            color={live ? 'secondary' : 'default'}
+            label={`RSB ${computeRSB(live?.advance ?? glyph.advanceWidth, live?.lsb ?? glyph.leftSideBearing, glyphBoxWidth(glyph))}`}
+            title="Right side bearing = advance − left side bearing − glyph width (read-only)"
+          />
+          {live && <Chip size="small" color="secondary" label={`dragging: adv ${live.advance} · LSB ${live.lsb}`} />}
+        </Stack>
+        <Stack direction="row" sx={{ flexWrap: 'wrap', columnGap: 1 }}>
+          <FormControlLabel
+            control={<Checkbox size="small" checked={snapToPixelGrid} onChange={(e) => setSnapToPixelGrid(e.target.checked)} />}
+            label="Snap handles to grid"
+            slotProps={{ typography: { variant: 'body2' } }}
+          />
+          <FormControlLabel
+            control={<Checkbox size="small" checked={showBearingHandles} onChange={(e) => setBearingHandles(e.target.checked)} />}
+            label="Show bearing guides & handles"
+            slotProps={{ typography: { variant: 'body2' } }}
           />
         </Stack>
         <Stack sx={{ flexWrap: 'wrap' }} direction="row" spacing={1} useFlexGap>
@@ -188,6 +224,12 @@ function GlyphForm(props: { slot: Slot; glyph: GlyphDoc; doc: FontDoc }) {
         </Stack>
         <Stack sx={{ flexWrap: 'wrap' }} direction="row" spacing={1} useFlexGap>
           <Button
+            onClick={() => openModal({ type: 'kerning', slot, left: glyph.id })}
+            title="Open the kerning pairs editor with this glyph as the left glyph"
+          >
+            Kerning pairs…
+          </Button>
+          <Button
             onClick={() => openModal({ type: 'transfer', from: slot, glyphIds: [glyph.id], mode: 'copy' })}
             title="Copy this glyph to the other font"
           >
@@ -214,6 +256,8 @@ export function PreviewPanel(props: { slot: Slot }) {
   const [text, setText] = useState<string>(SAMPLE_TEXTS.Mixed);
   const [size, setSize] = useState(42);
   const [spacing, setSpacing] = useState(0);
+  const [highlightKerning, setHighlightKerning] = useState(false);
+  const openModal = useStore((s) => s.openModal);
   // start from the family already registered for this slot, so switching tabs does not flash
   const [family, setFamily] = useState<string | null>(() => previewFamily(slot));
   const [status, setStatus] = useState<'idle' | 'building' | 'error'>('idle');
@@ -234,7 +278,10 @@ export function PreviewPanel(props: { slot: Slot }) {
     return () => clearTimeout(timer);
   }, [doc, slot]);
 
+  const kernRuns = useMemo(() => (doc && highlightKerning ? kernedRuns(doc, text) : null), [doc, text, highlightKerning]);
+
   if (!doc) return <Typography color="text.secondary">Load a font to preview it.</Typography>;
+  const kernCount = kerningOf(doc).filter((p) => p.value !== 0).length;
 
   return (
     <Stack spacing={1.5}>
@@ -294,8 +341,30 @@ export function PreviewPanel(props: { slot: Slot }) {
             opacity: family ? 1 : 0.4,
           }}
         >
-          {text || 'Type something…'}
+          {kernRuns
+            ? kernRuns.runs.map((r, i) =>
+                r.kerned ? (
+                  <mark key={i} style={{ background: 'rgba(255, 193, 7, 0.35)', color: 'inherit', borderRadius: 2 }} data-kerned="">
+                    {r.text}
+                  </mark>
+                ) : (
+                  <React.Fragment key={i}>{r.text}</React.Fragment>
+                ),
+              )
+            : text || 'Type something…'}
         </Paper>
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
+          <FormControlLabel
+            control={<Checkbox size="small" checked={highlightKerning} onChange={(e) => setHighlightKerning(e.target.checked)} />}
+            label="Highlight kerned pairs"
+            slotProps={{ typography: { variant: 'body2' } }}
+            disabled={kernCount === 0}
+          />
+          <Chip size="small" variant="outlined" label={`${kernCount.toLocaleString()} kerning pair${kernCount === 1 ? '' : 's'}${kernRuns ? ` · ${kernRuns.pairCount} in this text` : ''}`} />
+          <Button size="small" onClick={() => openModal({ type: 'kerning', slot })}>
+            Edit kerning…
+          </Button>
+        </Stack>
         <Hint>Preview reflects unsaved edits. It is rebuilt after each change.</Hint>
       </Section>
     </Stack>
@@ -315,8 +384,8 @@ export function ComparePanel() {
   const canvasB = useRef<HTMLCanvasElement>(null);
 
   const cp = useMemo(() => char.codePointAt(0) ?? null, [char]);
-  const glyphA = useMemo(() => (docA && cp !== null ? docA.glyphs.find((g) => g.unicode === cp) : undefined), [docA, cp]);
-  const glyphB = useMemo(() => (docB && cp !== null ? docB.glyphs.find((g) => g.unicode === cp) : undefined), [docB, cp]);
+  const glyphA = useMemo(() => (docA && cp !== null ? glyphForCodePoint(docA.glyphs, cp) : undefined), [docA, cp]);
+  const glyphB = useMemo(() => (docB && cp !== null ? glyphForCodePoint(docB.glyphs, cp) : undefined), [docB, cp]);
 
   useEffect(() => {
     const color = theme.palette.text.primary;

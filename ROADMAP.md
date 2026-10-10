@@ -72,7 +72,7 @@ Goal: Bring Pixeel's pixel editor to parity with dedicated pixel art tools.
 ## Step 3 — Typography & Metrics Control
 Goal: Full control over spacing and vertical metrics.
 
-### Slice 3.1 — Visual Advance & Bearings Editor
+### Slice 3.1 — Visual Advance & Bearings Editor ✅ done
 - **What:** Drag handles in editor to adjust advance width, left and right side bearings visually. Numeric inputs remain. Snap to pixel grid option.
 - **Acceptance:**
   - Dragging updates metrics live, undoable.
@@ -80,7 +80,7 @@ Goal: Full control over spacing and vertical metrics.
   - Guides show bearing lines.
   - Tests for metric updates.
 
-### Slice 3.2 — Kerning Pairs Editor
+### Slice 3.2 — Kerning Pairs Editor ✅ done
 - **What:** UI to view, add, edit, delete kerning pairs (GPOS/kern). Live preview in text preview panel with pair highlighting. Import existing kerning from font.
 - **Acceptance:**
   - List of pairs with search, sorted by frequency.
@@ -89,7 +89,7 @@ Goal: Full control over spacing and vertical metrics.
   - Export preserves kerning, re-import round-trips.
   - Tests.
 
-### Slice 3.3 — Vertical Metrics Editor
+### Slice 3.3 — Vertical Metrics Editor ✅ done
 - **What:** Dialog to edit ascent, descent, lineGap, typoAsc/Desc, winAsc/Desc, with visual preview of line box and baseline. Presets for common ratios.
 - **Acceptance:**
   - Visual preview of metrics.
@@ -104,7 +104,7 @@ Goal: Full control over spacing and vertical metrics.
 ## Step 4 — Font Structure Expansion
 Goal: Support complex font structures beyond one unicode per glyph.
 
-### Slice 4.1 — Multi-Unicode Support
+### Slice 4.1 — Multi-Unicode Support ✅ done
 - **What:** Allow multiple Unicode code points per glyph (e.g., A and fullwidth A share same outline). UI to add/remove mappings, conflict detection, preserve on import/export.
 - **Acceptance:**
   - Glyph browser shows all mappings.
@@ -113,7 +113,7 @@ Goal: Support complex font structures beyond one unicode per glyph.
   - Import preserves first mapping previously but now all.
   - Tests for multi-unicode round-trip.
 
-### Slice 4.2 — Composite Glyph Builder
+### Slice 4.2 — Composite Glyph Builder ✅ done
 - **What:** Visual builder for composite glyphs: add components, set offsets, scale, search base glyphs. Flatten preview, keep as composite on export.
 - **Acceptance:**
   - Builder UI in outline editor.
@@ -128,14 +128,14 @@ Goal: Support complex font structures beyond one unicode per glyph.
 ## Step 5 — Import/Export Expansion
 Goal: Support more formats for broader adoption.
 
-### Slice 5.1 — WOFF/WOFF2 Import
+### Slice 5.1 — WOFF/WOFF2 Import ✅ done
 - **What:** Import WOFF and WOFF2 by decompressing client-side (using wasm or JS decoder), then feeding to existing TTF path. Error messages for failures.
 - **Acceptance:**
   - Drop .woff/.woff2 works.
   - No backend, fully client-side.
   - Tests with fixture.
 
-### Slice 5.2 — BDF & Bitmap Font Import
+### Slice 5.2 — BDF & Bitmap Font Import ✅ done
 - **What:** Import BDF (Glyph Bitmap Distribution Format) as pixel font, auto-detect cell size, preserve metrics.
 - **Acceptance:**
   - .bdf file picker and drop.
@@ -158,6 +158,6 @@ Goal: Support more formats for broader adoption.
 ## Current Progress
 - Step 1: ✅ done (Command palette, Metrics HUD, Onboarding & Help)
 - Step 2: ✅ done (Symmetry & Mirroring, Tile Preview & Seamless, Magic Wand & Improved Fill)
-- Step 3: ⬜ not started
-- Step 4: ⬜ not started
-- Step 5: ⬜ not started
+- Step 3: ✅ done (Visual Advance & Bearings Editor, Kerning Pairs Editor, Vertical Metrics Editor)
+- Step 4: ✅ done (Multi-Unicode Support, Composite Glyph Builder)
+- Step 5: ✅ done (WOFF/WOFF2 Import, BDF Import)

@@ -8,6 +8,7 @@
  *  - an esphome/ directory with a ready-to-merge YAML snippet, and
  *  - a README.md explaining how to use the package.
  */
+import { allUnicodes } from '../core/unicodeMap';
 import JSZip from 'jszip';
 import type { FontDoc } from '../core/types';
 import { buildLicenseTxt } from '../core/license';
@@ -39,7 +40,7 @@ function supportedGlyphs(doc: FontDoc): string {
   const cps: number[] = [];
   for (const g of doc.glyphs) {
     if (g.unicode !== null && g.name !== '.notdef' && (g.pixel || g.contours.length > 0 || g.compound)) {
-      cps.push(g.unicode);
+      cps.push(...allUnicodes(g));
     }
   }
   cps.sort((a, b) => a - b);

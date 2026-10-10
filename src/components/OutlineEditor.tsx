@@ -1,16 +1,19 @@
 /** SVG contour editor: select contours/points, move points, reverse, delete. */
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '@mui/material/styles';
 import { Alert, Box, Button, IconButton, Paper, Stack, Tooltip, Typography } from '@mui/material';
 import DeleteIcon from '@mui/icons-material/Delete';
 import BackspaceIcon from '@mui/icons-material/Backspace';
 import SwapVertIcon from '@mui/icons-material/SwapVert';
 import SettingsBackupRestoreIcon from '@mui/icons-material/SettingsBackupRestore';
+import StraightenIcon from '@mui/icons-material/Straighten';
+import AdjustIcon from '@mui/icons-material/Adjust';
 import { useStore } from '../state/store';
 import type { Contour, GlyphDoc, Slot } from '../core/types';
 import { contourBoundsTight, reverseContour } from '../core/contours';
 import { glyphSvgPath } from '../render/glyphRender';
-import { revertToSource, setContours, syncLsbFromContours } from '../state/glyphActions';
+import { revertToSource, setContours, setGlyphMetrics, syncLsbFromContours } from '../state/glyphActions';
+import { computeRSB, glyphBoxWidth, dragAdvance, dragOrigin, sameMetrics, vectorSnapStep, type HMetrics } from '../core/metrics';
 
 interface PtRef {
   c: number; // contour index
@@ -27,6 +30,14 @@ interface DragState {
   next: Contour[] | null;
 }
 
+/** Dragging the origin or advance line (bearing handles). */
+interface MetricsDrag {
+  which: 'origin' | 'advance';
+  startClientX: number;
+  start: HMetrics;
+  latest: HMetrics;
+}
+
 const sameRef = (a: PtRef, c: number, p: number) => a.c === c && a.p === p;
 
 export function OutlineEditor(props: { slot: Slot; glyph: GlyphDoc }) {
@@ -34,6 +45,12 @@ export function OutlineEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const doc = useStore((s) => s.fonts[slot]);
   const commit = useStore((s) => s.commit);
   const toast = useStore((s) => s.toast);
+  const snapToPixelGrid = useStore((s) => s.snapToPixelGrid);
+  const showBearingHandles = useStore((s) => s.showBearingHandles);
+  const toggleSnapToPixelGrid = useStore((s) => s.toggleSnapToPixelGrid);
+  const toggleBearingHandles = useStore((s) => s.toggleBearingHandles);
+  const liveMetricsAll = useStore((s) => s.liveMetrics);
+  const setLiveMetrics = useStore((s) => s.setLiveMetrics);
   const theme = useTheme();
   const svgRef = useRef<SVGSVGElement>(null);
 
@@ -41,14 +58,17 @@ export function OutlineEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const [selContour, setSelContour] = useState<number | null>(null);
   const [live, setLive] = useState<Contour[] | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  const metricsDragRef = useRef<MetricsDrag | null>(null);
+  const liveMetrics = liveMetricsAll && liveMetricsAll.slot === slot && liveMetricsAll.glyphId === glyph.id ? liveMetricsAll : null;
+  useEffect(() => () => setLiveMetrics(null), [setLiveMetrics]);
 
   const contours = glyph.contours;
   const bb = useMemo(() => contourBoundsTight(contours), [contours]);
   const upem = doc?.metrics.unitsPerEm ?? 1000;
   const margin = upem * 0.12;
   const view = {
-    xMin: (bb?.xMin ?? 0) - margin,
-    xMax: (bb?.xMax ?? upem) + margin,
+    xMin: Math.min(bb?.xMin ?? 0, 0) - margin,
+    xMax: Math.max(bb?.xMax ?? upem, glyph.advanceWidth) + margin,
     yMin: (doc?.metrics.descent ?? 0) - margin / 2,
     yMax: (doc?.metrics.ascent ?? upem) + margin / 2,
   };
@@ -102,7 +122,30 @@ export function OutlineEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     };
   };
 
+  const snapOpts = { snap: snapToPixelGrid, step: vectorSnapStep(upem) };
+
+  /** Pointer down on the origin / advance line or its marker. */
+  const onMetricsDown = (which: 'origin' | 'advance', e: React.PointerEvent<SVGElement>) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    svgRef.current?.setPointerCapture(e.pointerId);
+    const start: HMetrics = { advance: glyph.advanceWidth, lsb: glyph.leftSideBearing };
+    metricsDragRef.current = { which, startClientX: e.clientX, start, latest: start };
+    setLiveMetrics({ slot, glyphId: glyph.id, ...start });
+  };
+
   const onSvgPointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    const md = metricsDragRef.current;
+    if (md) {
+      const rect = svgRef.current!.getBoundingClientRect();
+      const deltaUnits = ((e.clientX - md.startClientX) / rect.width) * vw;
+      const next = md.which === 'advance' ? dragAdvance(md.start, deltaUnits, snapOpts) : dragOrigin(md.start, deltaUnits, snapOpts);
+      if (!sameMetrics(next, md.latest)) {
+        md.latest = next;
+        setLiveMetrics({ slot, glyphId: glyph.id, ...next });
+      }
+      return;
+    }
     const drag = dragRef.current;
     if (!drag) return;
     const cur = fromEvent(e);
@@ -118,6 +161,21 @@ export function OutlineEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   };
 
   const onSvgPointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
+    const md = metricsDragRef.current;
+    if (md) {
+      metricsDragRef.current = null;
+      try {
+        svgRef.current?.releasePointerCapture(e.pointerId);
+      } catch {
+        /* not captured */
+      }
+      setLiveMetrics(null);
+      // one commit = one undo step for the whole drag
+      if (!sameMetrics(md.latest, md.start)) {
+        commit(slot, md.which === 'advance' ? 'Drag advance width' : 'Drag left side bearing', (d) => setGlyphMetrics(d, glyph.id, md.latest));
+      }
+      return;
+    }
     const drag = dragRef.current;
     dragRef.current = null;
     try {
@@ -159,6 +217,11 @@ export function OutlineEditor(props: { slot: Slot; glyph: GlyphDoc }) {
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).tagName === 'INPUT') return;
+    if (e.key === 'Escape' && metricsDragRef.current) {
+      metricsDragRef.current = null;
+      setLiveMetrics(null);
+      return;
+    }
     if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault();
       if (selPts.length) deleteSelected();
@@ -174,6 +237,13 @@ export function OutlineEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const fillColor = theme.palette.text.primary;
   const accent = theme.palette.secondary.main;
   const warn = theme.palette.primary.main;
+  // live metrics while a handle is dragged; the glyph content is drawn unmoved, so the lines shift instead
+  const advNow = liveMetrics?.advance ?? glyph.advanceWidth;
+  const lsbNow = liveMetrics?.lsb ?? glyph.leftSideBearing;
+  const shift = liveMetrics ? liveMetrics.lsb - glyph.leftSideBearing : 0;
+  const boxWidth = glyphBoxWidth(glyph);
+  const originX = -shift - view.xMin;
+  const advanceX = advNow - shift - view.xMin;
   const pointCount = contours.reduce((n, c) => n + c.length, 0);
 
   return (
@@ -204,6 +274,19 @@ export function OutlineEditor(props: { slot: Slot; glyph: GlyphDoc }) {
               </IconButton>
             </span>
           </Tooltip>
+          <Tooltip title="Snap advance / bearing handles to a grid">
+            <IconButton size="small" aria-label="Snap bearings to grid" color={snapToPixelGrid ? 'primary' : 'default'} onClick={toggleSnapToPixelGrid}>
+              <AdjustIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Show draggable advance / bearing handles">
+            <IconButton size="small" aria-label="Bearing handles" color={showBearingHandles ? 'primary' : 'default'} onClick={toggleBearingHandles}>
+              <StraightenIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }} aria-live="polite">
+            adv {advNow} · LSB {lsbNow} · RSB {computeRSB(advNow, lsbNow, boxWidth)}
+          </Typography>
           <Box sx={{ flex: 1 }} />
           <Button
             title="Replace the edited outline with the original imported outline"
@@ -221,7 +304,7 @@ export function OutlineEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       </Paper>
 
       <Alert severity="info" variant="outlined" sx={{ py: 0 }}>
-        Click a contour to select it · Shift-click points to multi-select · Drag points to move · Del removes the selection
+        Click a contour to select it · Shift-click points to multi-select · Drag points to move · Del removes the selection · Drag the vertical origin / advance lines to change the bearings
       </Alert>
 
       <Paper sx={{ p: 1, overflow: 'auto', bgcolor: 'background.default' }}>
@@ -261,17 +344,49 @@ export function OutlineEditor(props: { slot: Slot; glyph: GlyphDoc }) {
               strokeWidth={vw / 500}
             />
           ))}
-          <line x1={-view.xMin} x2={-view.xMin} y1={0} y2={vh} stroke={guideColor} strokeDasharray="3 5" opacity={0.4} strokeWidth={vw / 600} />
-          <line
-            x1={glyph.advanceWidth - view.xMin}
-            x2={glyph.advanceWidth - view.xMin}
-            y1={0}
-            y2={vh}
-            stroke={guideColor}
-            strokeDasharray="3 5"
-            opacity={0.4}
-            strokeWidth={vw / 600}
-          />
+          {showBearingHandles && bb && (
+            <>
+              <rect x={Math.min(originX, bb.xMin - view.xMin)} y={0} width={Math.abs(bb.xMin - view.xMin - originX)} height={vh} fill={accent} opacity={0.1} />
+              <rect x={Math.min(bb.xMax - view.xMin, advanceX)} y={0} width={Math.abs(advanceX - (bb.xMax - view.xMin))} height={vh} fill={accent} opacity={0.1} />
+            </>
+          )}
+          {([['origin', originX], ['advance', advanceX]] as Array<['origin' | 'advance', number]>).map(([which, x]) => (
+            <g key={which}>
+              <line
+                x1={x}
+                x2={x}
+                y1={0}
+                y2={vh}
+                stroke={showBearingHandles ? accent : guideColor}
+                strokeDasharray={liveMetrics ? undefined : '3 5'}
+                opacity={showBearingHandles ? 0.8 : 0.4}
+                strokeWidth={vw / (liveMetrics ? 300 : 600)}
+              />
+              {showBearingHandles && (
+                <>
+                  {/* wide invisible hit area */}
+                  <line
+                    x1={x}
+                    x2={x}
+                    y1={0}
+                    y2={vh}
+                    stroke="transparent"
+                    strokeWidth={vw / 60}
+                    style={{ cursor: 'ew-resize' }}
+                    onPointerDown={(e) => onMetricsDown(which, e)}
+                    data-testid={`${which}-handle`}
+                    aria-label={which === 'origin' ? 'Drag origin line (left side bearing)' : 'Drag advance width line'}
+                  />
+                  <polygon
+                    points={`${x - vw / 90},0 ${x + vw / 90},0 ${x},${vw / 45}`}
+                    fill={accent}
+                    style={{ cursor: 'ew-resize' }}
+                    onPointerDown={(e) => onMetricsDown(which, e)}
+                  />
+                </>
+              )}
+            </g>
+          ))}
           {/* filled shape */}
           <path d={glyphSvgPath(glyph, shown)} fill={fillColor} fillOpacity={0.85} fillRule="nonzero" data-fill="" />
           {/* contour outlines + points */}

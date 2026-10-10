@@ -1,4 +1,5 @@
 /** All modal dialogs (MUI). Each one reads the store, validates input, and applies one undoable edit. */
+import { hasCodePoint } from '../core/unicodeMap';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Accordion,
@@ -56,6 +57,9 @@ import { Bitmap, MAX_GRID } from '../core/bitmap';
 import { ledDotSize, paintBitmap, paintLedDots, toRgba } from '../render/bitmapCanvas';
 import { AppDialog, Hint, SegmentedControl, Section } from './ui';
 import { GlyphDesignerDialog } from './GlyphDesigner';
+import { KerningDialog } from './KerningDialog';
+import { VerticalMetricsDialog } from './VerticalMetricsDialog';
+import { UnicodeMappingsDialog } from './UnicodeMappingsDialog';
 
 /** Numeric field that keeps a number (NaN when empty) and reports it. */
 function NumberField(props: {
@@ -362,7 +366,7 @@ export function AddGlyphDialog(props: { slot: Slot }) {
       ? 'Not a single character or code point (try a character, U+10D0, 0x41 or 65).'
       : cp !== null && !isValidCodePoint(cp)
         ? 'Invalid Unicode code point.'
-        : cp !== null && doc.glyphs.some((g) => g.unicode === cp)
+        : cp !== null && doc.glyphs.some((g) => hasCodePoint(g, cp))
           ? `${describeCodePoint(cp)} already has a glyph. Select it instead, or unassign it first.`
           : null;
   const trimmedName = name.trim();
@@ -1573,7 +1577,7 @@ export function LedMatrixDialog(props: { slot: Slot }) {
     const pixelScale = hasDoc.ledMatrix ? spec.rows / hasDoc.ledMatrix.rows : undefined;
     const out: Array<{ label: string; bm: Bitmap }> = [];
     for (const ch of ['A', 'g', 'H', 'o', 'S', '8']) {
-      const g = hasDoc.glyphs.find((x) => x.unicode === ch.codePointAt(0) && (x.pixel || x.contours.length > 0 || x.compound));
+      const g = hasDoc.glyphs.find((x) => hasCodePoint(x, ch.codePointAt(0)!) && (x.pixel || x.contours.length > 0 || x.compound));
       if (!g) continue;
       const led = conformGlyphToLed(g, spec, contoursOf, { scale, pixelScale });
       if (!led.pixel) continue;
@@ -1880,6 +1884,12 @@ export function ModalHost() {
       return <GlyphDesignerDialog key={`${modal.slot}:${modal.glyphId}`} slot={modal.slot} glyphId={modal.glyphId} />;
     case 'ledMatrix':
       return <LedMatrixDialog slot={modal.slot} />;
+    case 'unicodeMappings':
+      return <UnicodeMappingsDialog key={`${modal.slot}-${modal.glyphId}`} slot={modal.slot} glyphId={modal.glyphId} />;
+    case 'verticalMetrics':
+      return <VerticalMetricsDialog key={modal.slot} slot={modal.slot} />;
+    case 'kerning':
+      return <KerningDialog key={`${modal.slot}:${modal.left ?? ''}:${modal.right ?? ''}`} slot={modal.slot} left={modal.left} right={modal.right} />;
     case 'help':
       return <HelpDialog />;
     default:

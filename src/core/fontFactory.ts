@@ -1,4 +1,5 @@
 /** Create brand-new pixel fonts from scratch. */
+import { allUnicodes } from './unicodeMap';
 import { Bitmap, bytesToB64 } from './bitmap';
 import { EMPTY_META, deriveMetaFields, makePostScriptName } from './metadata';
 import { emptyGlyphDoc } from './fontCodec';
@@ -147,7 +148,7 @@ export function makePixelGlyph(
 
 /** Create empty pixel glyphs for arbitrary, non-duplicated Unicode code points. */
 export function glyphSetForCodePoints(doc: FontDoc, codePoints: number[]): GlyphDoc[] {
-  const existing = new Set(doc.glyphs.map((g) => g.unicode).filter((u): u is number => u !== null));
+  const existing = new Set(doc.glyphs.flatMap((g) => allUnicodes(g)));
   const template = doc.glyphs.find((g) => g.pixel)?.pixel;
   const width = template?.width ?? 8;
   const height = template?.height ?? 8;

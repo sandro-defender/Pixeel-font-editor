@@ -1,4 +1,5 @@
 /** App shell: theme, layout, drag & drop import, auto-recovery and global shortcuts. */
+import { FONT_FILE_ACCEPT, FONT_FILE_LABEL, FONT_FILE_RE } from './core/fontFiles';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Box, Button, CssBaseline, Paper, Stack, ThemeProvider, Typography } from '@mui/material';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
@@ -88,8 +89,8 @@ function EmptyWorkspace(props: { slot?: Slot; full?: boolean }) {
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 1.5, mb: 3 }}>
           {props.full
-            ? 'Create pixel fonts from scratch, or open an existing .ttf and edit its outlines. Everything runs in your browser — fonts never leave your device. Drop a .ttf anywhere to import it.'
-            : 'Create a new font here, or open a .ttf / .otf file into this workspace.'}
+            ? 'Create pixel fonts from scratch, or open an existing .ttf, .otf, .woff, .woff2 or .bdf font and edit it. Everything runs in your browser — fonts never leave your device. Drop a font file anywhere to import it.'
+            : 'Create a new font here, or open a .ttf / .otf / .woff / .woff2 / .bdf file into this workspace.'}
         </Typography>
         <Stack sx={{ justifyContent: 'center' }} direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
           <Button
@@ -110,14 +111,14 @@ function EmptyWorkspace(props: { slot?: Slot; full?: boolean }) {
               fileRef.current?.click();
             }}
           >
-            Open a .ttf / .otf
+            Open a font file
           </Button>
           {props.full && <Button onClick={() => openModal({ type: 'help' })}>Help</Button>}
         </Stack>
         <input
           ref={fileRef}
           type="file"
-          accept=".ttf,.otf,font/ttf"
+          accept={FONT_FILE_ACCEPT}
           hidden
           aria-label="Open font file"
           onChange={(e) => {
@@ -270,9 +271,9 @@ function useFileDrop(): boolean {
       setDragging(false);
       const files = Array.from(e.dataTransfer?.files ?? []);
       const projects = files.filter((f) => /\.json$/i.test(f.name));
-      const fonts = files.filter((f) => /\.(ttf|otf)$/i.test(f.name));
+      const fonts = files.filter((f) => FONT_FILE_RE.test(f.name));
       if (projects.length === 0 && fonts.length === 0) {
-        useStore.getState().toast('warning', 'Drop a .ttf / .otf font or a .pixeel.json project file.');
+        useStore.getState().toast('warning', `Drop a font (${FONT_FILE_LABEL}) or a .pixeel.json project file.`);
         return;
       }
       // a project replaces everything; fonts go into the empty workspace first, then the active one
@@ -418,7 +419,7 @@ export default function App() {
           >
             <Paper sx={{ px: 4, py: 3, display: 'flex', gap: 2, alignItems: 'center' }}>
               <UploadFileIcon color="secondary" />
-              <Typography variant="h6">Drop .ttf / .otf or project files</Typography>
+              <Typography variant="h6">Drop font files (.ttf .otf .woff .woff2 .bdf) or project files</Typography>
             </Paper>
           </Box>
         )}

@@ -104,7 +104,7 @@ self.onmessage = (ev: MessageEvent<WorkerReq>) => {
       const { buffer } = buildTtf({
         doc,
         sourceTtf: resolveSource(req),
-        options: { preserveHinting: false, preserveKerning: false, validate: false },
+        options: { preserveHinting: false, preserveKerning: true, validate: false },
       });
       postMessage({ reqId: req.reqId, ok: true, buffer } satisfies WorkerResp, [buffer]);
       return;
