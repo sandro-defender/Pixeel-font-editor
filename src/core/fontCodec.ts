@@ -26,6 +26,7 @@ import { transformContours, contourBounds } from './contours';
 import { b64ToBytes } from './bitmap';
 import { checkLedFont, ledLabel } from './ledMatrix';
 import { effectiveVertical } from './verticalMetrics';
+import { allUnicodes } from './unicodeMap';
 import { buildKernTable, effectivePairs, kerningFromTtf, kerningOf, kerningToIndexPairs, parseKernTable } from './kerning';
 
 export interface TtfLike {
@@ -109,16 +110,15 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
 
   const srcGlyf = (ttf.glyf ?? []) as Array<Record<string, any>>;
   const glyphs: GlyphDoc[] = [];
-  const multiUnicode: string[] = [];
+  let extraCount = 0;
 
   // First pass: create docs so compound references can be resolved by index.
   for (let i = 0; i < srcGlyf.length; i++) {
     const g = srcGlyf[i];
     const unicodes: number[] = Array.isArray(g.unicode) ? g.unicode : g.unicode != null ? [g.unicode] : [];
     const unicode = unicodes.length ? unicodes[0] : null;
-    if (unicodes.length > 1) {
-      multiUnicode.push(`Glyph ${i} maps to ${unicodes.length} code points; only U+${unicode!.toString(16).toUpperCase()} is kept in the editor.`);
-    }
+    const extraUnicodes = [...new Set(unicodes.slice(1))].filter((cp) => cp !== unicode);
+    if (extraUnicodes.length) extraCount += extraUnicodes.length;
     const contours: Contour[] = Array.isArray(g.contours)
       ? g.contours.map((c: Array<Record<string, number>>) =>
           c.map((p) => ({ x: Math.round(p.x), y: Math.round(p.y), onCurve: !!p.onCurve })),
@@ -128,6 +128,7 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
       id: makeId('g'),
       name: g.name || `.glyph${i}`,
       unicode,
+      ...(extraUnicodes.length ? { extraUnicodes } : {}),
       advanceWidth: Math.round(g.advanceWidth ?? 0),
       leftSideBearing: Math.round(g.leftSideBearing ?? (contourBounds([contours[0] ?? []])?.xMin ?? 0)),
       kind: g.compound ? 'compound' : contours.length ? 'vector' : 'empty',
@@ -220,7 +221,7 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
   if (dropTargets.length) {
     warnings.push(`Tables that cannot be preserved on export: ${dropTargets.join(', ')}. See the export report for details.`);
   }
-  if (multiUnicode.length) warnings.push(multiUnicode.slice(0, 5).join(' '));
+  if (extraCount) warnings.push(`${extraCount} additional code point mapping(s) shared with another code point of the same glyph were imported (see the glyph's Unicode mappings).`);
   return { doc, sourceTtf: ttf, warnings };
 }
 
@@ -380,7 +381,7 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
       advanceWidth: Math.round(g.advanceWidth),
       leftSideBearing: Math.round(g.leftSideBearing),
     };
-    if (g.unicode !== null) rec.unicode = [g.unicode];
+    if (g.unicode !== null) rec.unicode = allUnicodes(g);
 
     if (g.kind === 'compound' && g.compound && g.compound.every((c) => c.glyphId && idToIndex.has(c.glyphId))) {
       // preserve as composite
@@ -541,6 +542,13 @@ export function validateExport(buffer: ArrayBuffer, doc: FontDoc, expectedKernPa
       if (!rg || Math.round(rg.advanceWidth ?? -1) !== Math.round(g.advanceWidth)) bad += 1;
     }
     push('cmap + metrics sample', bad === 0, `${sample.length - bad}/${sample.length} mapped glyphs verified (unicode → glyph index, advance width).`);
+    // every extra code point must point at the same glyph as its primary
+    const multi = doc.glyphs.map((g, i) => ({ g, i })).filter(({ g }) => (g.extraUnicodes?.length ?? 0) > 0);
+    if (multi.length) {
+      const pairs = multi.flatMap(({ g, i }) => allUnicodes(g).map((cp) => ({ cp, i })));
+      const wrong = pairs.filter(({ cp, i }) => cmap[cp] !== i).length;
+      push('Multiple code points per glyph', wrong === 0, `${pairs.length - wrong}/${pairs.length} cmap entries of multi-mapped glyphs point at the right glyph.`);
+    }
     if (expectedKernPairs !== undefined) {
       const kern = ttf.kern as ArrayLike<number> | undefined;
       const got = kern && kern.length ? parseKernTable(kern).pairs.length : 0;

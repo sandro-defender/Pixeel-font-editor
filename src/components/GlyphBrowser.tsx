@@ -1,4 +1,5 @@
 /** Left pane: searchable, filterable, virtualised glyph grid with multi-select and transfer shortcuts. */
+import { allUnicodes, hasCodePoint } from '../core/unicodeMap';
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Box, Button, ButtonBase, Chip, InputAdornment, Paper, Stack, TextField, Tooltip, Typography } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
@@ -20,20 +21,20 @@ export function parseSearch(q: string): (g: GlyphDoc) => boolean {
   if (!s) return () => true;
   if ([...s].length === 1) {
     const cp = s.codePointAt(0)!;
-    return (g) => g.unicode === cp;
+    return (g) => hasCodePoint(g, cp);
   }
   const hex = s.match(/^(?:u\+|0x)?([0-9a-f]{1,6})$/i);
   if (hex) {
     const cp = parseInt(hex[1], 16);
-    return (g) => g.unicode === cp;
+    return (g) => hasCodePoint(g, cp);
   }
   const lower = s.toLowerCase();
   return (g) => {
     if (g.name.toLowerCase().includes(lower)) return true;
-    if (g.unicode !== null) {
-      const name = unicodeName(g.unicode);
+    for (const cp of allUnicodes(g)) {
+      const name = unicodeName(cp);
       if (name?.toLowerCase().includes(lower)) return true;
-      if (describeCodePoint(g.unicode).toLowerCase().includes(lower)) return true;
+      if (describeCodePoint(cp).toLowerCase().includes(lower)) return true;
     }
     return false;
   };
@@ -63,7 +64,11 @@ const GlyphCard = React.memo(function GlyphCard({ slot, glyph, metrics, selected
   const unmapped = glyph.unicode === null;
   const label =
     glyph.unicode !== null ? `${charFromCodePoint(glyph.unicode)} · U+${glyph.unicode.toString(16).toUpperCase().padStart(4, '0')}` : glyph.name;
-  const title = glyph.unicode !== null ? `${glyph.name} — ${describeCodePoint(glyph.unicode)}` : `${glyph.name} — no Unicode assignment`;
+  const extra = glyph.extraUnicodes?.length ?? 0;
+  const title =
+    glyph.unicode !== null
+      ? `${glyph.name} — ${describeCodePoint(glyph.unicode)}${extra ? ` (+${extra} more: ${glyph.extraUnicodes!.map((c) => 'U+' + c.toString(16).toUpperCase().padStart(4, '0')).join(', ')})` : ''}`
+      : `${glyph.name} — no Unicode assignment`;
 
   return (
     <ButtonBase
@@ -103,6 +108,7 @@ const GlyphCard = React.memo(function GlyphCard({ slot, glyph, metrics, selected
     >
       {multiSelected && <Chip label="✓" size="small" color="primary" sx={{ position: 'absolute', top: 2, left: 2, height: 16, '& .MuiChip-label': { px: 0.5, fontSize: 10 } }} />}
       <Stack direction="row" spacing={0.25} sx={{ position: 'absolute', top: 2, right: 2 }}>
+        {extra > 0 && <Chip label={`+${extra}`} size="small" color="info" title={`${extra} more code point${extra === 1 ? '' : 's'} mapped to this glyph`} sx={{ height: 16, '& .MuiChip-label': { px: 0.5, fontSize: 10 } }} />}
         {glyph.kind === 'compound' && <Chip label="C" size="small" title="Composite glyph" sx={{ height: 16, '& .MuiChip-label': { px: 0.5, fontSize: 10 } }} />}
         {glyph.edited && <Chip label="✎" size="small" color="primary" title="Edited" sx={{ height: 16, '& .MuiChip-label': { px: 0.5, fontSize: 10 } }} />}
       </Stack>
@@ -135,6 +141,7 @@ export function GlyphBrowser(props: { slot: Slot }) {
       switch (ui.glyphListFilter) {
         case 'mapped': return g.unicode !== null;
         case 'unmapped': return g.unicode === null;
+        case 'multi': return (g.extraUnicodes?.length ?? 0) > 0;
         case 'edited': return g.edited;
         default: return true;
       }
@@ -225,6 +232,7 @@ export function GlyphBrowser(props: { slot: Slot }) {
                 { value: 'all', label: 'All' },
                 { value: 'mapped', label: 'Mapped', tip: 'Glyphs with a Unicode assignment' },
                 { value: 'unmapped', label: 'Unmapped', tip: 'Glyphs without a Unicode assignment' },
+                { value: 'multi', label: 'Multi', tip: 'Glyphs with more than one code point' },
                 { value: 'edited', label: 'Edited', tip: 'Glyphs you changed' },
               ]}
               onChange={(v) => setListFilter(slot, v)}

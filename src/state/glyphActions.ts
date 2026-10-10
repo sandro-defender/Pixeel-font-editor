@@ -4,7 +4,8 @@ import { makeId } from '../core/types';
 import { emptyGlyphDoc, resolveGlyphContours } from '../core/fontCodec';
 import { resizedPixelData } from '../core/fontFactory';
 import { Bitmap, bytesToB64 } from '../core/bitmap';
-import { suggestGlyphName } from '../core/unicodeNames';
+import { isValidCodePoint, suggestGlyphName } from '../core/unicodeNames';
+import { formatCp, hasCodePoint, mappingConflicts, normalizeMappings, withoutCodePoint } from '../core/unicodeMap';
 import { validateUnicodeAssignment } from '../core/transfer';
 import { contourBounds } from '../core/contours';
 import { dropKerningFor, scaleKerning } from '../core/kerning';
@@ -42,6 +43,7 @@ export function duplicateGlyph(doc: FontDoc, glyphId: string, insertAfter = true
     ...src,
     id: makeId('g'),
     unicode: null, // never silently steal a code point
+    extraUnicodes: undefined,
     name: src.name === '.notdef' ? 'notdefCopy' : `${src.name}.copy`,
     contours: src.contours.map((c) => c.map((p) => ({ ...p }))),
     pixel: src.pixel ? { ...src.pixel } : null,
@@ -56,15 +58,68 @@ export function duplicateGlyph(doc: FontDoc, glyphId: string, insertAfter = true
   return { doc: { ...doc, glyphs }, copy };
 }
 
+/**
+ * Set a glyph's PRIMARY code point. `null` clears every mapping of the glyph.
+ * If `unicode` is already one of the glyph's extra mappings it becomes primary
+ * and the old primary stays mapped as an extra.
+ */
 export function assignUnicode(doc: FontDoc, glyphId: string, unicode: number | null): FontDoc {
   const err = validateUnicodeAssignment(doc, glyphId, unicode);
   if (err) throw new Error(err);
-  const glyphs = doc.glyphs.map((g) =>
-    g.id === glyphId
-      ? { ...g, unicode, name: g.name.startsWith('.glyph') || !g.name ? suggestGlyphName(unicode) ?? g.name : g.name }
-      : g,
-  );
+  const glyphs = doc.glyphs.map((g) => {
+    if (g.id !== glyphId) return g;
+    const name = unicode !== null && (g.name.startsWith('.glyph') || !g.name) ? suggestGlyphName(unicode) ?? g.name : g.name;
+    if (unicode === null) {
+      const { extraUnicodes: _drop, ...rest } = g;
+      return { ...rest, unicode: null, name };
+    }
+    const extras = (g.extraUnicodes ?? []).filter((cp) => cp !== unicode);
+    if (g.extraUnicodes?.includes(unicode) && g.unicode !== null) extras.unshift(g.unicode);
+    return normalizeMappings({ ...g, unicode, extraUnicodes: extras, name });
+  });
   return { ...doc, glyphs };
+}
+
+/**
+ * Map an additional code point to a glyph. If another glyph owns it the call
+ * fails (naming the owner) unless `reassign` is set, which takes the code point
+ * from that glyph. A glyph without any mapping gets it as its primary.
+ */
+export function addUnicodeMapping(doc: FontDoc, glyphId: string, cp: number, opts: { reassign?: boolean } = {}): FontDoc {
+  const glyph = doc.glyphs.find((g) => g.id === glyphId);
+  if (!glyph) throw new Error('Unknown glyph.');
+  if (glyph.name === '.notdef') throw new Error('.notdef must stay unmapped.');
+  if (!isValidCodePoint(cp)) throw new Error('Not a valid Unicode code point (U+0000–U+10FFFF, no surrogates).');
+  if (hasCodePoint(glyph, cp)) throw new Error(`${formatCp(cp)} is already mapped to "${glyph.name}".`);
+  const [conflict] = mappingConflicts(doc, glyphId, [cp]);
+  if (conflict && !opts.reassign) {
+    throw new Error(`${formatCp(cp)} is already assigned to "${conflict.ownerName}". Reassign it to "${glyph.name}" or pick another value.`);
+  }
+  const glyphs = doc.glyphs.map((g) => {
+    if (g.id === glyphId) {
+      const name = g.unicode === null && (g.name.startsWith('.glyph') || !g.name) ? suggestGlyphName(cp) ?? g.name : g.name;
+      return normalizeMappings(g.unicode === null ? { ...g, unicode: cp, name } : { ...g, extraUnicodes: [...(g.extraUnicodes ?? []), cp] });
+    }
+    return conflict && g.id === conflict.ownerId ? withoutCodePoint(g, cp) : g;
+  });
+  return { ...doc, glyphs };
+}
+
+/** Unmap one code point from a glyph (the first extra becomes primary when the primary is removed). */
+export function removeUnicodeMapping(doc: FontDoc, glyphId: string, cp: number): FontDoc {
+  const glyph = doc.glyphs.find((g) => g.id === glyphId);
+  if (!glyph) throw new Error('Unknown glyph.');
+  if (!hasCodePoint(glyph, cp)) throw new Error(`${formatCp(cp)} is not mapped to "${glyph.name}".`);
+  return { ...doc, glyphs: doc.glyphs.map((g) => (g.id === glyphId ? withoutCodePoint(g, cp) : g)) };
+}
+
+/** Make one of the glyph's mapped code points the primary one. */
+export function setPrimaryUnicode(doc: FontDoc, glyphId: string, cp: number): FontDoc {
+  const glyph = doc.glyphs.find((g) => g.id === glyphId);
+  if (!glyph) throw new Error('Unknown glyph.');
+  if (!hasCodePoint(glyph, cp)) throw new Error(`${formatCp(cp)} is not mapped to "${glyph.name}".`);
+  if (glyph.unicode === cp) return doc;
+  return assignUnicode(doc, glyphId, cp);
 }
 
 export function renameGlyph(doc: FontDoc, glyphId: string, name: string): FontDoc {

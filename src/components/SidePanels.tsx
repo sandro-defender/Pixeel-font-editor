@@ -1,4 +1,5 @@
 /** Right-hand panels: metrics & tools, live preview, A/B comparison. */
+import { glyphForCodePoint, mappingCount } from '../core/unicodeMap';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '@mui/material/styles';
 import { Alert, Box, Button, Checkbox, Chip, FormControlLabel, Paper, Slider, Stack, TextField, Typography } from '@mui/material';
@@ -32,7 +33,7 @@ export function MetricsPanel(props: { slot: Slot }) {
   // keyed: switching glyphs (or any change to these values) starts the form from the stored values
   return (
     <GlyphForm
-      key={`${glyph.id}|${glyph.unicode}|${glyph.name}|${glyph.advanceWidth}|${glyph.leftSideBearing}`}
+      key={`${glyph.id}|${glyph.unicode}|${(glyph.extraUnicodes ?? []).join(',')}|${glyph.name}|${glyph.advanceWidth}|${glyph.leftSideBearing}`}
       slot={slot}
       glyph={glyph}
       doc={doc}
@@ -122,12 +123,12 @@ function GlyphForm(props: { slot: Slot; glyph: GlyphDoc; doc: FontDoc }) {
       <Section title="Glyph metrics & tools">
         <Stack sx={{ alignItems: 'flex-start' }} direction="row" spacing={1}>
           <TextField
-            label="Unicode"
+            label={glyph.extraUnicodes?.length ? 'Primary Unicode' : 'Unicode'}
             value={uniInput}
             onChange={(e) => setUniInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && applyUnicode()}
             placeholder="e.g. U+0041"
-            helperText="Character, U+10D0, 0x41 or 65. Empty removes the mapping."
+            helperText={glyph.extraUnicodes?.length ? 'Character, U+10D0, 0x41 or 65. Empty removes ALL mappings of this glyph.' : 'Character, U+10D0, 0x41 or 65. Empty removes the mapping.'}
             slotProps={{ htmlInput: { 'aria-label': 'Unicode value' } }}
           />
           <Button onClick={applyUnicode} title="Apply the Unicode assignment (validated for conflicts)" sx={{ mt: 0.5 }}>
@@ -135,6 +136,11 @@ function GlyphForm(props: { slot: Slot; glyph: GlyphDoc; doc: FontDoc }) {
           </Button>
         </Stack>
         {glyph.unicode !== null && <Hint>{describeCodePoint(glyph.unicode)}</Hint>}
+        {glyph.name !== '.notdef' && (
+          <Button size="small" variant="outlined" onClick={() => openModal({ type: 'unicodeMappings', slot, glyphId: glyph.id })} title="Map several code points to this glyph, with conflict checks" sx={{ alignSelf: 'flex-start' }}>
+            {`Unicode mappings (${mappingCount(glyph)})…`}
+          </Button>
+        )}
         {glyph.name === '.notdef' && <Hint>.notdef is required and stays unmapped.</Hint>}
 
         <TextField
@@ -378,8 +384,8 @@ export function ComparePanel() {
   const canvasB = useRef<HTMLCanvasElement>(null);
 
   const cp = useMemo(() => char.codePointAt(0) ?? null, [char]);
-  const glyphA = useMemo(() => (docA && cp !== null ? docA.glyphs.find((g) => g.unicode === cp) : undefined), [docA, cp]);
-  const glyphB = useMemo(() => (docB && cp !== null ? docB.glyphs.find((g) => g.unicode === cp) : undefined), [docB, cp]);
+  const glyphA = useMemo(() => (docA && cp !== null ? glyphForCodePoint(docA.glyphs, cp) : undefined), [docA, cp]);
+  const glyphB = useMemo(() => (docB && cp !== null ? glyphForCodePoint(docB.glyphs, cp) : undefined), [docB, cp]);
 
   useEffect(() => {
     const color = theme.palette.text.primary;

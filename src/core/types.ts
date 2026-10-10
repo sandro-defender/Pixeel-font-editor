@@ -47,6 +47,12 @@ export interface GlyphDoc {
   name: string;
   /** Assigned Unicode code point, or null when unmapped. */
   unicode: number | null;
+  /**
+   * Additional code points mapped to this glyph (several cmap entries → one glyph).
+   * `unicode` stays the primary mapping; this list never contains it, never has
+   * duplicates, and is empty/absent when `unicode` is null. See src/core/unicodeMap.ts.
+   */
+  extraUnicodes?: number[];
   advanceWidth: number;
   leftSideBearing: number;
   kind: GlyphKind;

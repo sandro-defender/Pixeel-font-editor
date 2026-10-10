@@ -42,6 +42,7 @@ export type ModalState =
   | { type: 'glyphDesigner'; slot: Slot; glyphId: string }
   | { type: 'ledMatrix'; slot: Slot }
   | { type: 'verticalMetrics'; slot: Slot }
+  | { type: 'unicodeMappings'; slot: Slot; glyphId: string }
   | { type: 'kerning'; slot: Slot; left?: string; right?: string }
   | { type: 'help' };
 
@@ -58,7 +59,7 @@ export interface HistoryEntry {
 interface FontSlotUI {
   glyphId: string | null;
   glyphListSearch: string;
-  glyphListFilter: 'all' | 'mapped' | 'unmapped' | 'edited';
+  glyphListFilter: 'all' | 'mapped' | 'unmapped' | 'multi' | 'edited';
   multiSelected: string[];
   zoom: number;
   tool: 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select' | 'wand';

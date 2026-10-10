@@ -8,6 +8,7 @@ import { makeId } from './types';
 import { cloneContours, scaleContours, contourBounds } from './contours';
 import { resolveGlyphContours, flattenedGlyph } from './fontCodec';
 import { suggestGlyphName } from './unicodeNames';
+import { allUnicodes, hasCodePoint, normalizeMappings, withoutCodePoint } from './unicodeMap';
 import { conformGlyphToLed, ledFontScale } from './ledMatrix';
 
 export type MetricsMode = 'preserve' | 'adapt';
@@ -45,7 +46,7 @@ export interface TransferResult {
 export function findConflicts(src: FontDoc, dst: FontDoc, glyphIds: string[]): TransferConflict[] {
   const dstMap = new Map<number, string>();
   dst.glyphs.forEach((g) => {
-    if (g.unicode !== null) dstMap.set(g.unicode, g.id);
+    for (const cp of allUnicodes(g)) if (!dstMap.has(cp)) dstMap.set(cp, g.id);
   });
   const out: TransferConflict[] = [];
   for (const id of glyphIds) {
@@ -75,6 +76,7 @@ export function adaptGlyph(g: GlyphDoc, src: FontDoc, dst: FontDoc, scale: numbe
     pixel: null,
     unicode: reassignTo === undefined ? g.unicode : reassignTo,
   };
+  if (g.extraUnicodes) copy.extraUnicodes = [...g.extraUnicodes];
 
   if (g.kind === 'compound' && g.compound) {
     // Flatten safely: cross-font component references cannot be preserved
@@ -123,7 +125,7 @@ export function transferGlyphs(src: FontDoc, dst: FontDoc, glyphIds: string[], o
   const unicodeIndex = () => {
     const m = new Map<number, number>();
     glyphs.forEach((g, i) => {
-      if (g.unicode !== null) m.set(g.unicode, i);
+      for (const cp of allUnicodes(g)) if (!m.has(cp)) m.set(cp, i);
     });
     return m;
   };
@@ -158,13 +160,21 @@ export function transferGlyphs(src: FontDoc, dst: FontDoc, glyphIds: string[], o
       if (opts.collision === 'replace') {
         const idx = glyphs.findIndex((x) => x.id === conflict.existingId);
         if (idx > 0) {
-          glyphs[idx] = { ...glyphs[idx], unicode: null }; // unmap, keep glyph
+          glyphs[idx] = withoutCodePoint(glyphs[idx], conflict.unicode); // unmap this code point, keep the glyph
         }
         replaced += 1;
       }
     }
 
     const adapted = adaptGlyph(g, src, dst, scale, targetUnicode);
+    if (g.extraUnicodes?.length) {
+      // extra mappings never steal code points: drop the ones the destination already uses
+      const taken = unicodeIndex();
+      const keep = g.extraUnicodes.filter((cp) => !taken.has(cp) && cp !== adapted.unicode);
+      if (keep.length < g.extraUnicodes.length) notes.push(`\"${g.name}\": ${g.extraUnicodes.length - keep.length} extra code point(s) already used in the destination were not copied.`);
+      adapted.extraUnicodes = keep;
+      Object.assign(adapted, normalizeMappings(adapted));
+    }
     if (g.kind === 'compound') flattenedComposites += 1;
 
     // LED destinations keep grid-derived metrics (whole pixels), so skip adapt.
@@ -219,7 +229,7 @@ export function validateUnicodeAssignment(doc: FontDoc, glyphId: string, unicode
   const glyph = doc.glyphs.find((g) => g.id === glyphId);
   if (!glyph) return 'Unknown glyph.';
   if (glyph.name === '.notdef') return '.notdef must stay unmapped.';
-  const clash = doc.glyphs.find((g) => g.unicode === unicode && g.id !== glyphId);
+  const clash = doc.glyphs.find((g) => g.id !== glyphId && hasCodePoint(g, unicode));
   if (clash) return `U+${unicode.toString(16).toUpperCase()} is already assigned to "${clash.name}". Unassign it first or pick another value.`;
   return null;
 }

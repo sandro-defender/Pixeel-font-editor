@@ -10,6 +10,7 @@
  * (formats 1 and 2, class pairs expanded) of the `kern` feature. Export writes
  * a format-0 `kern` table whenever the pairs were edited in Pixeel.
  */
+import { allUnicodes, glyphForCodePoint } from './unicodeMap';
 import type { FontDoc, GlyphDoc, KerningPair } from './types';
 import { parseCodePointInput } from './unicodeNames';
 
@@ -109,7 +110,7 @@ export function resolveGlyphInput(doc: FontDoc, input: string): GlyphDoc | null 
   if (!raw) return null;
   const cp = parseCodePointInput(raw);
   if (cp !== null) {
-    const byCp = doc.glyphs.find((g) => g.unicode === cp);
+    const byCp = glyphForCodePoint(doc.glyphs, cp);
     if (byCp) return byCp;
   }
   return doc.glyphs.find((g) => g.name === raw) ?? null;
@@ -224,7 +225,7 @@ export interface LaidOutGlyph {
 /** Position the characters of `text`; characters without a glyph are skipped. */
 export function layoutKerned(doc: FontDoc, text: string, pairs: KerningPair[] = kerningOf(doc), withKerning = true): { glyphs: LaidOutGlyph[]; width: number } {
   const byCp = new Map<number, GlyphDoc>();
-  for (const g of doc.glyphs) if (g.unicode !== null && !byCp.has(g.unicode)) byCp.set(g.unicode, g);
+  for (const g of doc.glyphs) for (const cp of allUnicodes(g)) if (!byCp.has(cp)) byCp.set(cp, g);
   const map = kerningMap(pairs);
   const out: LaidOutGlyph[] = [];
   let x = 0;
@@ -258,7 +259,7 @@ export interface TextRun {
 export function kernedRuns(doc: FontDoc, text: string, pairs: KerningPair[] = kerningOf(doc)): { runs: TextRun[]; pairCount: number } {
   const chars = Array.from(text);
   const byCp = new Map<number, GlyphDoc>();
-  for (const g of doc.glyphs) if (g.unicode !== null && !byCp.has(g.unicode)) byCp.set(g.unicode, g);
+  for (const g of doc.glyphs) for (const cp of allUnicodes(g)) if (!byCp.has(cp)) byCp.set(cp, g);
   const map = kerningMap(pairs);
   const marked = new Array<boolean>(chars.length).fill(false);
   let pairCount = 0;
