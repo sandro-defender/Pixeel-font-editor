@@ -2,13 +2,14 @@
 import React, { useEffect, useMemo, useRef } from 'react';
 import { Box, Button, ButtonBase, Chip, InputAdornment, Paper, Stack, TextField, Tooltip, Typography } from '@mui/material';
 import AddIcon from '@mui/icons-material/Add';
+import TranslateIcon from '@mui/icons-material/Translate';
 import SearchIcon from '@mui/icons-material/Search';
 import ClearIcon from '@mui/icons-material/Clear';
 import { useStore } from '../state/store';
 import type { FontMetrics, GlyphDoc, Slot } from '../core/types';
 import { charFromCodePoint, describeCodePoint, unicodeName } from '../core/unicodeNames';
 import { renderGlyphCard } from '../render/glyphRender';
-import { basicSetGlyphs } from '../core/fontFactory';
+import { basicSetGlyphs, georgianSetGlyphs } from '../core/fontFactory';
 import { glyphDragType } from './glyphDrag';
 import { SegmentedControl } from './ui';
 import { VirtualGrid } from './VirtualGrid';
@@ -148,11 +149,23 @@ export function GlyphBrowser(props: { slot: Slot }) {
     if (!current) return;
     const glyphs = basicSetGlyphs(current);
     if (glyphs.length === 0) {
-      toast('info', 'All basic Latin, digit, punctuation and Georgian glyphs already exist.');
+      toast('info', 'All basic Latin, digit, punctuation and modern Georgian Mkhedruli glyphs already exist.');
       return;
     }
     commit(slot, 'Add basic set', (d) => ({ ...d, glyphs: [...d.glyphs, ...glyphs] }));
-    toast('success', `Added ${glyphs.length} starter glyphs (Latin, digits, punctuation, Georgian).`);
+    toast('success', `Added ${glyphs.length} starter glyphs (Latin, digits, punctuation and 33 Mkhedruli letters).`);
+  };
+
+  const addGeorgianSet = () => {
+    const current = useStore.getState().fonts[slot];
+    if (!current) return;
+    const glyphs = georgianSetGlyphs(current);
+    if (glyphs.length === 0) {
+      toast('info', 'All Georgian letter glyphs already exist.');
+      return;
+    }
+    commit(slot, 'Add full Georgian set', (d) => ({ ...d, glyphs: [...d.glyphs, ...glyphs] }));
+    toast('success', `Added ${glyphs.length} Georgian letter glyphs across Mkhedruli, Mtavruli, Asomtavruli and Nuskhuri.`);
   };
 
   const selectionCount = ui.multiSelected.length;
@@ -193,9 +206,14 @@ export function GlyphBrowser(props: { slot: Slot }) {
           <Button variant="contained" color="primary" startIcon={<AddIcon />} onClick={() => openModal({ type: 'addGlyph', slot })} sx={{ flexShrink: 0 }}>
             Glyph
           </Button>
-          <Tooltip title="Add empty glyphs for basic Latin, digits, punctuation and Georgian Mkhedruli">
+          <Tooltip title="Add Latin, digits, punctuation and the 33 modern Georgian Mkhedruli letters">
             <Button onClick={addBasicSet} sx={{ flexShrink: 0 }}>
               Aa+
+            </Button>
+          </Tooltip>
+          <Tooltip title="Add all assigned Georgian letters: Mkhedruli, Mtavruli, Asomtavruli and Nuskhuri">
+            <Button aria-label="Add full Georgian letter set" onClick={addGeorgianSet} sx={{ flexShrink: 0, minWidth: 42, px: 0.75 }}>
+              <TranslateIcon fontSize="small" sx={{ mr: 0.35 }} />ქ+
             </Button>
           </Tooltip>
           <Box sx={{ flex: 1, minWidth: 0 }}>
