@@ -136,8 +136,9 @@ describe('moving a selection out of the grid window', () => {
     canvas.releasePointerCapture = () => {};
 
     const RULER = 22;
+    const PAD = 26;
     const zoom = 16;
-    const at = (x: number, y: number) => ({ clientX: RULER + (x + 0.5) * zoom, clientY: RULER + (7 - y + 0.5) * zoom });
+    const at = (x: number, y: number) => ({ clientX: RULER + PAD + (x + 0.5) * zoom, clientY: RULER + (7 - y + 0.5) * zoom });
 
     // grab the selection at the bottom-left cell and drag it far past the edge
     fireEvent.pointerDown(canvas, { button: 0, pointerId: 1, ...at(0, 0) });

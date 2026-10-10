@@ -116,6 +116,15 @@ export function setLeftSideBearing(doc: FontDoc, glyphId: string, lsb: number): 
   });
 }
 
+/**
+ * Set advance and LSB together (the visual bearings editor): one document
+ * update, so a single drag is a single undo step. The LSB shift translates the
+ * glyph content exactly like `setLeftSideBearing`.
+ */
+export function setGlyphMetrics(doc: FontDoc, glyphId: string, m: { advance: number; lsb: number }): FontDoc {
+  return setAdvance(setLeftSideBearing(doc, glyphId, m.lsb), glyphId, m.advance);
+}
+
 export function resizeGrid(doc: FontDoc, glyphId: string, width: number, height: number, mode: 'crop' | 'center' | 'resample'): FontDoc {
   const g = doc.glyphs.find((x) => x.id === glyphId);
   if (!g?.pixel) throw new Error('Glyph has no pixel grid.');

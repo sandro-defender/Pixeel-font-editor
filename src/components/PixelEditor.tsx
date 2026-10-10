@@ -38,13 +38,16 @@ import ZoomOutIcon from '@mui/icons-material/ZoomOut';
 import KeyboardIcon from '@mui/icons-material/Keyboard';
 import AspectRatioIcon from '@mui/icons-material/AspectRatio';
 import AutoFixHighIcon from '@mui/icons-material/AutoFixHigh';
+import StraightenIcon from '@mui/icons-material/Straighten';
+import AdjustIcon from '@mui/icons-material/Adjust';
 import { useStore } from '../state/store';
 import type { GlyphDoc, Slot } from '../core/types';
 import { Bitmap, clampPasteOffset } from '../core/bitmap';
 import { wandSelect, mergeWandIntoSelection, fillWithSelection } from '../core/wand';
 import { TilePreview } from './TilePreview';
 import { symmetricPoints, paintWithSymmetry, type SymmetryMode } from '../core/symmetry';
-import { setPixelData, snapGlyphToLed, setGlyphSymmetry } from '../state/glyphActions';
+import { setPixelData, snapGlyphToLed, setGlyphSymmetry, setGlyphMetrics } from '../state/glyphActions';
+import { clamp, computeRSB, dragAdvance, dragOrigin, sameMetrics, type HMetrics } from '../core/metrics';
 import { tracePixelData } from '../core/trace';
 import { contoursToPath2D } from '../render/glyphRender';
 import { checkLedFont, glyphLedIssues, ledLabel } from '../core/ledMatrix';
@@ -55,6 +58,10 @@ let appClipboard: Bitmap | null = null;
 
 /** Pixels reserved for the rulers along the top and left edges. */
 const RULER = 22;
+/** Horizontal margin left and right of the grid so origin / advance lines outside the grid stay reachable. */
+export const PAD = 26;
+/** Pointer distance (canvas px) within which a bearing handle in the top ruler is grabbed. */
+const HANDLE_HIT = 9;
 
 type Tool = 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select' | 'wand';
 
@@ -84,6 +91,7 @@ type DragState =
   | { kind: 'paint'; value: number; last: Cell; label: string }
   | { kind: 'shape'; value: number; start: Cell; cur: Cell }
   | { kind: 'marquee'; start: Cell; cur: Cell }
+  | { kind: 'metrics'; which: 'origin' | 'advance'; startPx: number; start: HMetrics; latest: HMetrics }
   | { kind: 'move'; startX: number; startY: number; origX: number; origY: number; x: number; y: number; bm: Bitmap };
 
 interface Pal {
@@ -156,6 +164,12 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const setStoreCursor = useStore((s) => s.setCursor);
   const setStoreSelectionRect = useStore((s) => s.setSelectionRect);
   const toggleMetricsHud = useStore((s) => s.toggleMetricsHud);
+  const snapToPixelGrid = useStore((s) => s.snapToPixelGrid);
+  const showBearingHandles = useStore((s) => s.showBearingHandles);
+  const toggleSnapToPixelGrid = useStore((s) => s.toggleSnapToPixelGrid);
+  const toggleBearingHandles = useStore((s) => s.toggleBearingHandles);
+  const liveMetricsAll = useStore((s) => s.liveMetrics);
+  const setLiveMetrics = useStore((s) => s.setLiveMetrics);
   const toast = useStore((s) => s.toast);
   const undo = useStore((s) => s.undo);
   const redo = useStore((s) => s.redo);
@@ -194,6 +208,10 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   const liveRef = useRef<Bitmap | null>(null); // working copy during a paint stroke
   const dragRef = useRef<DragState | null>(null);
   const bump = () => setTick((t) => t + 1);
+  const [handleHover, setHandleHover] = useState(false);
+  const liveMetrics = liveMetricsAll && liveMetricsAll.slot === slot && liveMetricsAll.glyphId === glyph.id ? liveMetricsAll : null;
+  // never leave a half-finished drag readout behind
+  useEffect(() => () => setLiveMetrics(null), [setLiveMetrics]);
 
   // a selection only means something for the pixel data it was cut from
   const sel = rawSel && pixel && rawSel.afterB64 === pixel.cellsB64 ? rawSel : null;
@@ -281,13 +299,34 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     const rect = canvas.getBoundingClientRect();
     const sx = canvas.width / rect.width;
     const sy = canvas.height / rect.height;
-    const px = (e.clientX - rect.left) * sx - RULER;
+    const px = (e.clientX - rect.left) * sx - RULER - PAD;
     const py = (e.clientY - rect.top) * sy - RULER;
     const x = Math.floor(px / zoom);
     const screenRow = Math.floor(py / zoom);
     const y = gridH - 1 - screenRow;
     const inside = px >= 0 && py >= 0 && x >= 0 && x < gridW && screenRow >= 0 && screenRow < gridH;
     return { x, y, inside };
+  };
+
+  /** Pointer position in canvas pixels. */
+  const canvasPoint = (e: { clientX: number; clientY: number }) => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return { px: (e.clientX - rect.left) * (canvas.width / rect.width), py: (e.clientY - rect.top) * (canvas.height / rect.height) };
+  };
+
+  /** Which bearing handle (a marker in the top ruler) is under the pointer, if any. */
+  const handleAt = (e: { clientX: number; clientY: number }): 'origin' | 'advance' | null => {
+    if (!pixel || !showBearingHandles) return null;
+    const { px, py } = canvasPoint(e);
+    if (py < 0 || py > RULER + 2) return null;
+    const W = gridW * zoom;
+    const upc = pixel.unitsPerCell;
+    const at = (cells: number) => RULER + PAD + clamp(cells * zoom, -PAD + 7, W + PAD - 7);
+    const dOrigin = Math.abs(px - at(-pixel.offsetX / upc));
+    const dAdvance = Math.abs(px - at((glyph.advanceWidth - pixel.offsetX) / upc));
+    if (Math.min(dOrigin, dAdvance) > HANDLE_HIT) return null;
+    return dAdvance <= dOrigin ? 'advance' : 'origin';
   };
 
   /** Fill / flood region at a cell. Left: toggles the region; right: clears it. Respects selection if active. */
@@ -340,7 +379,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     if (!ctx) return;
     const W = gridW * zoom;
     const H = gridH * zoom;
-    const cw = W + RULER;
+    const cw = W + RULER + 2 * PAD;
     const ch = H + RULER;
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
@@ -350,11 +389,11 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     ctx.fillStyle = pal.panel2;
     ctx.fillRect(0, 0, cw, ch);
     ctx.fillStyle = pal.panel;
-    ctx.fillRect(RULER, RULER, W, H);
+    ctx.fillRect(RULER + PAD, RULER, W, H);
 
     // --- grid content (drawn in cell space, origin = top-left of the grid)
     ctx.save();
-    ctx.translate(RULER, RULER);
+    ctx.translate(RULER + PAD, RULER);
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(layer, 0, 0, W, H);
 
@@ -402,8 +441,20 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     guide(yFor(0), pal.accent2, 'baseline');
     guide(yFor(doc?.metrics.ascent ?? 0), pal.accent2, 'ascent');
     guide(yFor(doc?.metrics.descent ?? 0), pal.accent2, 'descent');
-    const xOrigin = (-pixel.offsetX / upc) * zoom;
-    const xAdv = ((glyph.advanceWidth - pixel.offsetX) / upc) * zoom;
+    // while a handle is dragged the lines follow the live values (the glyph stays put in the grid)
+    const advNow = liveMetrics?.advance ?? glyph.advanceWidth;
+    const offNow = pixel.offsetX + (liveMetrics ? liveMetrics.lsb - glyph.leftSideBearing : 0);
+    const xOrigin = (-offNow / upc) * zoom;
+    const xAdv = ((advNow - offNow) / upc) * zoom;
+    if (showBearingHandles) {
+      // tint the left / right side bearing spans
+      ctx.fillStyle = alpha(pal.accent2, 0.12);
+      for (const [a, b] of [[xOrigin, 0], [W, xAdv]] as Array<[number, number]>) {
+        const lo = Math.max(-PAD, Math.min(a, b));
+        const hi = Math.min(W + PAD, Math.max(a, b));
+        if (hi > lo) ctx.fillRect(lo, 0, hi - lo, H);
+      }
+    }
     // symmetry guides
     const symMode = (glyph.symmetry as SymmetryMode) ?? 'none';
     if (symMode !== 'none') {
@@ -433,9 +484,10 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     }
 
     for (const [x, lab] of [[xOrigin, 'origin'], [xAdv, 'advance']] as Array<[number, string]>) {
-      if (x < -20 || x > W + 20) continue;
+      if (x < -PAD || x > W + PAD) continue;
       ctx.strokeStyle = pal.accent2;
-      ctx.setLineDash([2, 4]);
+      ctx.lineWidth = liveMetrics ? 2 : 1;
+      ctx.setLineDash(liveMetrics ? [] : [2, 4]);
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, H);
@@ -443,8 +495,9 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       ctx.setLineDash([]);
       ctx.fillStyle = pal.accent2;
       ctx.font = '10px system-ui';
-      ctx.fillText(lab, Math.max(2, Math.min(W - 40, x + 3)), H - 4);
+      ctx.fillText(lab, Math.max(2 - PAD, Math.min(W + PAD - 40, x + 3)), H - 4);
     }
+    ctx.lineWidth = 1;
 
     // reference overlay (trace another glyph)
     if (ui.overlayGlyphId && doc) {
@@ -511,6 +564,24 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     }
     ctx.restore();
 
+    // --- draggable bearing handles: markers in the top ruler (clamped to the canvas when off-grid)
+    if (showBearingHandles) {
+      for (const [x, label] of [[xOrigin, 'origin'], [xAdv, 'advance']] as Array<[number, string]>) {
+        const clamped = clamp(x, -PAD + 7, W + PAD - 7);
+        const hx = RULER + PAD + clamped;
+        ctx.fillStyle = pal.accent2;
+        ctx.globalAlpha = clamped === x ? 1 : 0.55;
+        ctx.beginPath();
+        ctx.moveTo(hx - 6, RULER - 11);
+        ctx.lineTo(hx + 6, RULER - 11);
+        ctx.lineTo(hx, RULER - 1);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        void label;
+      }
+    }
+
     // --- rulers: exact column numbers (top) and row numbers from the top (left)
     const step = zoom >= 14 ? 1 : zoom >= 8 ? 2 : zoom >= 5 ? 5 : 10;
     const cursorScreenRow = gridH - 1 - cursor.y;
@@ -520,7 +591,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     for (let x = 0; x < gridW; x++) {
       if (!(x % step === 0 || x === cursor.x)) continue;
       ctx.fillStyle = x === cursor.x ? pal.accent : pal.dim;
-      ctx.fillText(String(x), RULER + x * zoom + zoom / 2, RULER / 2);
+      ctx.fillText(String(x), RULER + PAD + x * zoom + zoom / 2, RULER / 2 - 3);
     }
     ctx.textAlign = 'right';
     for (let r = 0; r < gridH; r++) {
@@ -536,7 +607,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     ctx.moveTo(0, RULER + 0.5);
     ctx.lineTo(cw, RULER + 0.5);
     ctx.stroke();
-  }, [layer, display, zoom, gridW, gridH, pixel, sel, stroke, marquee, cursor, hover, kbAnchor, ui.showGrid, tool, ui.overlayGlyphId, doc, glyph, pal]);
+  }, [layer, display, zoom, gridW, gridH, pixel, sel, stroke, marquee, cursor, hover, kbAnchor, ui.showGrid, tool, ui.overlayGlyphId, doc, glyph, pal, liveMetrics, showBearingHandles, slot]);
 
   // mini previews: actual size, enlarged, LED matrix
   useEffect(() => {
@@ -556,6 +627,16 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
   // ------------------------------------------------------------ pointer
   const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!pixel || !baseBitmap || (e.button !== 0 && e.button !== 2)) return;
+    // a marker in the top ruler: drag the origin (LSB) or the advance line
+    const handle = e.button === 0 ? handleAt(e) : null;
+    if (handle) {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      wrapRef.current?.focus();
+      const start: HMetrics = { advance: glyph.advanceWidth, lsb: glyph.leftSideBearing };
+      dragRef.current = { kind: 'metrics', which: handle, startPx: canvasPoint(e).px, start, latest: start };
+      setLiveMetrics({ slot, glyphId: glyph.id, ...start });
+      return;
+    }
     const c = cellAt(e);
     if (!c.inside) return;
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -616,6 +697,20 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
 
   const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!pixel) return;
+    const dm = dragRef.current;
+    if (dm?.kind === 'metrics') {
+      const deltaUnits = ((canvasPoint(e).px - dm.startPx) / zoom) * pixel.unitsPerCell;
+      // LED matrix fonts must stay on whole pixels
+      const opts = { snap: !!led || snapToPixelGrid, step: pixel.unitsPerCell };
+      const next = dm.which === 'advance' ? dragAdvance(dm.start, deltaUnits, opts) : dragOrigin(dm.start, deltaUnits, opts);
+      if (!sameMetrics(next, dm.latest)) {
+        dm.latest = next;
+        setLiveMetrics({ slot, glyphId: glyph.id, ...next });
+      }
+      return;
+    }
+    const overHandle = handleAt(e) !== null;
+    setHandleHover((h) => (h === overHandle ? h : overHandle));
     const c = cellAt(e);
     const next = c.inside ? { x: c.x, y: c.y } : null;
     // only re-render when the hovered cell actually changes
@@ -687,6 +782,14 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
     dragRef.current = null;
     if (!d || !baseBitmap) return;
     switch (d.kind) {
+      case 'metrics': {
+        setLiveMetrics(null);
+        if (!sameMetrics(d.latest, d.start)) {
+          // one commit = one undo step for the whole drag
+          commit(slot, d.which === 'advance' ? 'Drag advance width' : 'Drag left side bearing', (doc0) => setGlyphMetrics(doc0, glyph.id, d.latest));
+        }
+        break;
+      }
       case 'paint': {
         const bm = liveRef.current;
         liveRef.current = null;
@@ -929,6 +1032,11 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
       }
       case 'escape': {
         handled();
+        if (dragRef.current?.kind === 'metrics') {
+          dragRef.current = null;
+          setLiveMetrics(null);
+          break;
+        }
         if (kbAnchor) setKbAnchor(null);
         else if (sel) commitWork(withSel(baseBitmap), 'Place selection');
         setStroke(null);
@@ -1002,6 +1110,8 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
 
           <Stack sx={{ alignItems: 'center' }} direction="row" aria-label="View">
             <Action tip="Toggle grid lines (G)" label="Toggle grid lines" active={ui.showGrid} icon={<GridOnIcon fontSize="small" />} onClick={() => toggleGridLines(slot)} />
+            <Action tip="Snap advance / bearing handles to the pixel grid" label="Snap bearings to pixel grid" active={snapToPixelGrid || !!led} icon={<AdjustIcon fontSize="small" />} onClick={toggleSnapToPixelGrid} />
+            <Action tip="Show draggable advance / bearing handles (drag the markers in the top ruler)" label="Bearing handles" active={showBearingHandles} icon={<StraightenIcon fontSize="small" />} onClick={toggleBearingHandles} />
             <Action tip="Toggle tile preview 3×3" label="Tile preview" active={ui.showTilePreview} icon={<GridOnIcon fontSize="small" />} onClick={() => toggleTilePreview(slot)} />
             <Action tip="Zoom out (-)" label="Zoom out" icon={<ZoomOutIcon fontSize="small" />} onClick={() => zoomBy(-1)} />
             <Typography variant="caption" color="text.secondary" sx={{ minWidth: 64, textAlign: 'center' }}>
@@ -1089,9 +1199,9 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
           <Box sx={{ overflow: 'auto', maxWidth: '100%', p: 1, borderRadius: 1, bgcolor: 'background.default', border: 1, borderColor: 'divider' }}>
             <canvas
               ref={canvasRef}
-              width={gridW * zoom + RULER}
+              width={gridW * zoom + RULER + 2 * PAD}
               height={gridH * zoom + RULER}
-              style={{ display: 'block', cursor: 'crosshair', touchAction: 'none', userSelect: 'none', maxWidth: '100%' }}
+              style={{ display: 'block', cursor: handleHover || liveMetrics ? 'ew-resize' : 'crosshair', touchAction: 'none', userSelect: 'none', maxWidth: '100%' }}
               onPointerDown={onPointerDown}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
@@ -1123,7 +1233,7 @@ export function PixelEditor(props: { slot: Slot; glyph: GlyphDoc }) {
               <Chip size="small" color="secondary" sx={{ mb: 0.75 }} label={`LED ${ledLabel(led)} · ${led.cellUnits} units/px · spacing ${led.spacing}px`} />
             )}
             <Typography variant="caption" color="text.secondary" component="p" sx={{ m: 0 }}>
-              advance {glyph.advanceWidth} · LSB {glyph.leftSideBearing} · cell {pixel.unitsPerCell}u · baseline row {pixel.baselineRow}
+              advance {liveMetrics?.advance ?? glyph.advanceWidth} · LSB {liveMetrics?.lsb ?? glyph.leftSideBearing} · RSB {computeRSB(liveMetrics?.advance ?? glyph.advanceWidth, liveMetrics?.lsb ?? glyph.leftSideBearing, gridW * pixel.unitsPerCell)} · cell {pixel.unitsPerCell}u · baseline row {pixel.baselineRow}
             </Typography>
           </Box>
         </Stack>

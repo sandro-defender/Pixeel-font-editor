@@ -1,7 +1,7 @@
 /** Right-hand panels: metrics & tools, live preview, A/B comparison. */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '@mui/material/styles';
-import { Alert, Box, Button, Chip, Paper, Slider, Stack, TextField, Typography } from '@mui/material';
+import { Alert, Box, Button, Checkbox, Chip, FormControlLabel, Paper, Slider, Stack, TextField, Typography } from '@mui/material';
 import { useStore } from '../state/store';
 import type { FontDoc, GlyphDoc, Slot } from '../core/types';
 import { parseCodePointInput, describeCodePoint, SAMPLE_TEXTS } from '../core/unicodeNames';
@@ -9,6 +9,7 @@ import { drawGlyph } from '../render/glyphRender';
 import { previewFamily, rebuildPreview } from '../services/previewFont';
 import { assignUnicode, duplicateGlyph, removeGlyphs, renameGlyph, setAdvance, setLeftSideBearing } from '../state/glyphActions';
 import { Hint, Section } from './ui';
+import { computeRSB, glyphBoxWidth } from '../core/metrics';
 
 /** Whole-number font units; rejects blank and fractional input. */
 function parseUnits(text: string): number | null {
@@ -44,6 +45,12 @@ function GlyphForm(props: { slot: Slot; glyph: GlyphDoc; doc: FontDoc }) {
   const toast = useStore((s) => s.toast);
   const askConfirm = useStore((s) => s.askConfirm);
   const openModal = useStore((s) => s.openModal);
+  const snapToPixelGrid = useStore((s) => s.snapToPixelGrid);
+  const showBearingHandles = useStore((s) => s.showBearingHandles);
+  const setSnapToPixelGrid = useStore((s) => s.setSnapToPixelGrid);
+  const setBearingHandles = useStore((s) => s.setBearingHandles);
+  const liveAll = useStore((s) => s.liveMetrics);
+  const live = liveAll && liveAll.slot === slot && liveAll.glyphId === glyph.id ? liveAll : null;
 
   const [uniInput, setUniInput] = useState(glyph.unicode !== null ? 'U+' + glyph.unicode.toString(16).toUpperCase().padStart(4, '0') : '');
   const [nameInput, setNameInput] = useState(glyph.name);
@@ -154,6 +161,28 @@ function GlyphForm(props: { slot: Slot; glyph: GlyphDoc; doc: FontDoc }) {
             onChange={(e) => setLsbInput(e.target.value)}
             helperText="Shifts glyph content"
             slotProps={{ htmlInput: { 'aria-label': 'Left side bearing', step: 1 } }}
+          />
+        </Stack>
+        <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap aria-live="polite">
+          <Chip
+            size="small"
+            variant="outlined"
+            color={live ? 'secondary' : 'default'}
+            label={`RSB ${computeRSB(live?.advance ?? glyph.advanceWidth, live?.lsb ?? glyph.leftSideBearing, glyphBoxWidth(glyph))}`}
+            title="Right side bearing = advance − left side bearing − glyph width (read-only)"
+          />
+          {live && <Chip size="small" color="secondary" label={`dragging: adv ${live.advance} · LSB ${live.lsb}`} />}
+        </Stack>
+        <Stack direction="row" sx={{ flexWrap: 'wrap', columnGap: 1 }}>
+          <FormControlLabel
+            control={<Checkbox size="small" checked={snapToPixelGrid} onChange={(e) => setSnapToPixelGrid(e.target.checked)} />}
+            label="Snap handles to grid"
+            slotProps={{ typography: { variant: 'body2' } }}
+          />
+          <FormControlLabel
+            control={<Checkbox size="small" checked={showBearingHandles} onChange={(e) => setBearingHandles(e.target.checked)} />}
+            label="Show bearing guides & handles"
+            slotProps={{ typography: { variant: 'body2' } }}
           />
         </Stack>
         <Stack sx={{ flexWrap: 'wrap' }} direction="row" spacing={1} useFlexGap>

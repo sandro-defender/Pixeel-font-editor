@@ -87,6 +87,14 @@ export interface ConfirmOptions {
   danger?: boolean;
 }
 
+/** Transient metrics shown while an advance / bearing handle is being dragged. */
+export interface LiveMetrics {
+  slot: Slot;
+  glyphId: string;
+  advance: number;
+  lsb: number;
+}
+
 export interface AppStore {
   fonts: { A: FontDoc | null; B: FontDoc | null };
   fileNames: { A: string | null; B: string | null };
@@ -107,6 +115,12 @@ export interface AppStore {
 
   past: Record<Slot, HistoryEntry[]>;
   future: Record<Slot, HistoryEntry[]>;
+
+  /** Snap dragged advance / bearing handles to the pixel (or outline) grid. */
+  snapToPixelGrid: boolean;
+  /** Draw draggable advance / bearing handles in the editors. */
+  showBearingHandles: boolean;
+  liveMetrics: LiveMetrics | null;
 
   // --- core actions
   setActive: (slot: Slot) => void;
@@ -156,6 +170,11 @@ export interface AppStore {
   toggleTilePreview: (slot: Slot) => void;
   setTilePreview: (slot: Slot, show: boolean) => void;
   setSeamlessMode: (slot: Slot, show: boolean) => void;
+  toggleSnapToPixelGrid: () => void;
+  setSnapToPixelGrid: (on: boolean) => void;
+  toggleBearingHandles: () => void;
+  setBearingHandles: (on: boolean) => void;
+  setLiveMetrics: (m: LiveMetrics | null) => void;
 }
 
 function prefersDark(): boolean {
@@ -199,6 +218,9 @@ export const useStore = create<AppStore>((set, get) => ({
   lastProjectSavedAt: null,
   past: { A: [], B: [] },
   future: { A: [], B: [] },
+  snapToPixelGrid: true,
+  showBearingHandles: true,
+  liveMetrics: null,
 
   setActive: (slot) => set({ active: slot }),
   setTheme: (theme) => set({ theme }),
@@ -419,6 +441,11 @@ export const useStore = create<AppStore>((set, get) => ({
     set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], showTilePreview: show } } })),
   setSeamlessMode: (slot, show) =>
     set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], seamlessMode: show } } })),
+  toggleSnapToPixelGrid: () => set((s) => ({ snapToPixelGrid: !s.snapToPixelGrid })),
+  setSnapToPixelGrid: (on) => set({ snapToPixelGrid: on }),
+  toggleBearingHandles: () => set((s) => ({ showBearingHandles: !s.showBearingHandles })),
+  setBearingHandles: (on) => set({ showBearingHandles: on }),
+  setLiveMetrics: (m) => set({ liveMetrics: m }),
 }));
 
 // ---------------------------------------------------------------------------
