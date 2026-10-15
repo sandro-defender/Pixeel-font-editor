@@ -50,6 +50,13 @@ import { exportFont } from '../services/exportService';
 import { DEFAULT_EXPORT_OPTIONS, resolveGlyphContours, type ExportReport } from '../core/fontCodec';
 import { downloadArrayBuffer, downloadBlob } from '../services/persistence';
 import { exportEsphomePackage } from '../services/esphomeExport';
+import {
+  buildMax7219Package,
+  defaultMax7219Settings,
+  MAX7219_BPP,
+  validateSlug,
+  type Max7219ExportSettings,
+} from '../services/max7219Export';
 import { releaseSourcesNotIn } from '../services/fileActions';
 import { findConflicts, sourceAfterMove, transferGlyphs, type CollisionStrategy, type MetricsMode } from '../core/transfer';
 import { detectFontPixelGrid, gridForRows, pixelizeFont, placeOnGrid, type PixelizeReport } from '../core/pixelGrid';
@@ -592,6 +599,13 @@ export function ExportDialog(props: { slot: Slot }) {
   const [buffer, setBuffer] = useState<ArrayBuffer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+
+  // MAX7219 Matrix Clock export state.
+  const [m7219, setM7219] = useState<Max7219ExportSettings | null>(null);
+  const [m7219Busy, setM7219Busy] = useState(false);
+  const [m7219Preview, setM7219Preview] = useState<Awaited<ReturnType<typeof buildMax7219Package>> | null>(null);
+  const [m7219Error, setM7219Error] = useState<string | null>(null);
+
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -599,6 +613,15 @@ export function ExportDialog(props: { slot: Slot }) {
       mounted.current = false;
     };
   }, []);
+  // Whenever the document changes (different slot / new font), reset MAX7219 defaults.
+  useEffect(() => {
+    if (doc) setM7219(defaultMax7219Settings(doc));
+    setM7219Preview(null);
+    setM7219Error(null);
+  }, [doc?.fontId]);
+
+  // Auto-derive slug when the user edits the label but has not manually touched the slug.
+  const [m7219SlugTouched, setM7219SlugTouched] = useState(false);
 
   const src = doc?.source ?? null;
   const droppedPreview = useMemo(() => {
@@ -657,6 +680,95 @@ export function ExportDialog(props: { slot: Slot }) {
     }
   };
 
+  const updateM = (patch: Partial<Max7219ExportSettings>) => {
+    if (!m7219) return;
+    setM7219({ ...m7219, ...patch });
+  };
+
+  // True when the settings differ from the last built package (so we need to rebuild).
+  const m7219DirtyFrom = (prev: Max7219ExportSettings | null, cur: Max7219ExportSettings | null): boolean => {
+    if (!prev || !cur) return true;
+    return (
+      prev.label !== cur.label ||
+      prev.slug !== cur.slug ||
+      prev.ttfFileName !== cur.ttfFileName ||
+      prev.pixelSize !== cur.pixelSize ||
+      prev.glyphs !== cur.glyphs ||
+      prev.licenseName !== cur.licenseName ||
+      prev.licenseText !== cur.licenseText
+    );
+  };
+
+  const previewMax7219 = async () => {
+    if (!m7219) return;
+    try {
+      setM7219Error(null);
+      setM7219Preview(null);
+      setM7219Busy(true);
+      setBusy('Validating MAX7219 export (compiling TTF, rasterizing @ 8px 1bpp)…');
+      // Make sure we have a current compiled TTF first.
+      let ttfBuf = buffer;
+      if (!ttfBuf) {
+        const out = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS, preserveHinting, preserveKerning });
+        ttfBuf = out.buffer;
+        if (mounted.current) {
+          setBuffer(ttfBuf);
+          setReport(out.report);
+        }
+      }
+      const pkg = await buildMax7219Package(doc, m7219);
+      if (mounted.current) setM7219Preview(pkg);
+    } catch (err) {
+      if (mounted.current) setM7219Error(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mounted.current) {
+        setM7219Busy(false);
+        setBusy(null);
+      }
+    }
+  };
+
+  const downloadMax7219 = async () => {
+    if (!m7219) return;
+    // If the user hasn't previewed yet, build now. Otherwise download the cached blob.
+    try {
+      if (!m7219Preview || m7219DirtyFrom(m7219Preview.settings, m7219)) {
+        setM7219Busy(true);
+        setBusy('Building MAX7219 package…');
+        setM7219Error(null);
+        const out = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS, preserveHinting, preserveKerning });
+        if (mounted.current) {
+          setBuffer(out.buffer);
+          setReport(out.report);
+        }
+        const pkg = await buildMax7219Package(doc, m7219);
+        if (mounted.current) {
+          setM7219Preview(pkg);
+          downloadBlob(pkg.blob, pkg.fileName);
+          toast(pkg.validation.ok ? 'success' : 'warning', pkg.validation.ok
+            ? `MAX7219 package downloaded: ${pkg.fileName} (all checks passed).`
+            : `MAX7219 package downloaded: ${pkg.fileName} — EXPORT-REPORT.md is marked FAILED; fix the listed issues before submitting.`);
+        }
+      } else {
+        downloadBlob(m7219Preview.blob, m7219Preview.fileName);
+        toast(m7219Preview.validation.ok ? 'success' : 'warning', m7219Preview.validation.ok
+          ? `MAX7219 package downloaded: ${m7219Preview.fileName} (all checks passed).`
+          : `MAX7219 package downloaded: ${m7219Preview.fileName} — EXPORT-REPORT.md is marked FAILED; fix the listed issues before submitting.`);
+      }
+    } catch (err) {
+      if (mounted.current) {
+        const msg = err instanceof Error ? err.message : String(err);
+        setM7219Error(msg);
+        setError(msg);
+      }
+    } finally {
+      if (mounted.current) {
+        setM7219Busy(false);
+        setBusy(null);
+      }
+    }
+  };
+
   return (
     <AppDialog
       title={`Export — Font ${props.slot} (${doc.meta.fontFamily})`}
@@ -681,6 +793,17 @@ export function ExportDialog(props: { slot: Slot }) {
               title="Download a ZIP with the .ttf, LICENSE.txt and a ready-to-use ESPHome YAML snippet"
             >
               ESPHome package .zip
+            </Button>
+          )}
+          {buffer && m7219 && (
+            <Button
+              variant="contained"
+              color="secondary"
+              startIcon={<DownloadIcon />}
+              onClick={() => downloadMax7219()}
+              title="Export a package for the ESPHome MAX7219 Matrix Clock project (fonts/<slug>/, packages/fonts/<slug>.yaml, manifest, report, integration snippets)"
+            >
+              Export for ESPHome MAX7219 Matrix Clock
             </Button>
           )}
           <Box sx={{ flex: 1 }} />
@@ -775,6 +898,122 @@ export function ExportDialog(props: { slot: Slot }) {
                 <Alert severity="error">Validation failed — inspect the checks above.</Alert>
               )}
             </>
+          )}
+        </Section>
+      )}
+      {m7219 && (
+        <Section
+          title="Export for ESPHome MAX7219 Matrix Clock"
+          action={
+            <Button
+              variant="outlined"
+              size="small"
+              onClick={previewMax7219}
+              disabled={m7219Busy || running}
+              startIcon={<DownloadIcon />}
+            >
+              {m7219Preview && !m7219DirtyFrom(m7219Preview.settings, m7219) ? 'Re-validate' : 'Validate preview'}
+            </Button>
+          }
+        >
+          <Hint>
+            Build a ZIP that drops directly into <code>sandro-defender/Esphome-Max7219-Matrix-Clock</code>: <code>fonts/{m7219.slug}/</code>, <code>packages/fonts/{m7219.slug}.yaml</code>,
+            <code>font-manifest.json</code>, <code>EXPORT-REPORT.md</code>, <code>INTEGRATION.md</code> and an <code>integration/</code> folder with snippets for configurator/display/tests/README. The font is rasterized at
+            {' '}{m7219.pixelSize}&thinsp;px, bpp={MAX7219_BPP}, exactly as ESPHome will render it.
+          </Hint>
+          <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
+            <TextField
+              label="Display label"
+              value={m7219.label}
+              onChange={(e) => updateM({ label: e.target.value })}
+              helperText="Shown in the clock's font selector (e.g. &quot;MAX7219 Georgian&quot;)."
+            />
+            <TextField
+              label="Repository slug"
+              value={m7219.slug}
+              onChange={(e) => { setM7219SlugTouched(true); updateM({ slug: e.target.value }); }}
+              error={!!validateSlug(m7219.slug)}
+              helperText={validateSlug(m7219.slug) ?? 'Kebab-case directory name under fonts/ (^[a-z0-9]+(-[a-z0-9]+)*$).'}
+            />
+            <TextField
+              label="Compiled font filename"
+              value={m7219.ttfFileName}
+              onChange={(e) => updateM({ ttfFileName: e.target.value })}
+              helperText={`Defaults to ${psName}.ttf; preserve its original capitalization.`}
+            />
+            <TextField
+              label="Pixel size"
+              type="number"
+              value={m7219.pixelSize}
+              disabled
+              slotProps={{ htmlInput: { readOnly: true } }}
+              helperText="Locked to 8 px for the MAX7219 8×8 matrix."
+            />
+            <TextField
+              label="Glyph set"
+              value={m7219.glyphs}
+              onChange={(e) => updateM({ glyphs: e.target.value })}
+              multiline
+              minRows={2}
+              sx={{ gridColumn: { sm: '1 / -1' } }}
+              helperText="Exact UTF-8 glyph string used in the YAML glyphs: list. Default includes digits, punctuation and Mkhedruli Georgian."
+            />
+            <TextField
+              label="License name"
+              value={m7219.licenseName}
+              onChange={(e) => updateM({ licenseName: e.target.value })}
+              error={!m7219.licenseName.trim()}
+              helperText={m7219.licenseName.trim() ? 'Short SPDX-style name (e.g. SIL OFL 1.1, CC BY-SA 3.0).' : 'Required — e.g. “SIL OFL 1.1”, “CC BY-SA 3.0”. We never invent a license.'}
+            />
+            <TextField
+              label="License text"
+              value={m7219.licenseText}
+              onChange={(e) => updateM({ licenseText: e.target.value })}
+              multiline
+              minRows={3}
+              error={!m7219.licenseText.trim()}
+              helperText={m7219.licenseText.trim() ? 'Prefilled from the font’s embedded license metadata.' : 'Required — paste the full license text. It will be saved as fonts/<slug>/LICENSE.txt.'}
+            />
+          </Box>
+          <Box sx={{ mt: 2, fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 12, color: 'text.secondary' }}>
+            <div>firmware id: <code>{`font_${m7219.slug.replace(/-/g, '_')}_source`}</code></div>
+            <div>build macro: <code>{`MAX7219_FONT_${m7219.slug.replace(/-/g, '_').toUpperCase()}`}</code></div>
+            <div>asset path: <code>fonts/{m7219.slug}/{m7219.ttfFileName}</code></div>
+          </Box>
+          {m7219Error && <Alert severity="error" sx={{ mt: 2 }}>{m7219Error}</Alert>}
+          {!m7219.licenseName.trim() && (
+            <Alert severity="warning" sx={{ mt: 2 }}>
+              License name is missing. A ready export requires both a license name and the full license text. Set them above (the Info &amp; license dialog can write SIL OFL 1.1 text for you).
+            </Alert>
+          )}
+          {!m7219.licenseText.trim() && (
+            <Alert severity="warning" sx={{ mt: 1 }}>License text is missing — fonts/<wbr />{m7219.slug}/<wbr />LICENSE.txt would be empty.</Alert>
+          )}
+          {validateSlug(m7219.slug) && <Alert severity="warning" sx={{ mt: 1 }}>{validateSlug(m7219.slug)}</Alert>}
+          {m7219Preview && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2">Validation preview</Typography>
+              <Table size="small" aria-label="MAX7219 validation checks">
+                <TableBody>
+                  {m7219Preview.validation.checks.map((c) => (
+                    <TableRow key={c.name}>
+                      <TableCell>{c.ok ? '✅' : '❌'} {c.name}</TableCell>
+                      <TableCell>{c.detail}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              {m7219Preview.validation.ok ? (
+                <Alert severity="success">All mandatory checks passed. The ZIP is ready for submission.</Alert>
+              ) : (
+                <Alert severity="error">
+                  Validation failed — EXPORT-REPORT.md inside the ZIP is marked <strong>FAIL</strong> and lists every failing glyph and measurement. The font is not silently resampled or stretched; fix the source font and re-export.
+                </Alert>
+              )}
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                Package: <code>{m7219Preview.fileName}</code> ({Math.ceil(m7219Preview.blob.size / 1024)} KB) · TTF SHA-256 <code>{m7219Preview.ttfSha256.slice(0, 16)}…</code>
+              </Typography>
+            </Box>
           )}
         </Section>
       )}
