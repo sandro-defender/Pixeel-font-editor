@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { newTestFont, drawGlyph, parseTtf } from './helpers';
+import { createNewFont } from '../src/core/fontFactory';
+import { defaultLedSpec } from '../src/core/ledMatrix';
 import {
   buildMax7219Package,
   defaultMax7219Settings,
@@ -30,25 +32,13 @@ import { DEFAULT_EXPORT_OPTIONS } from '../src/core/fontCodec';
  * 1px spacing makes 6px × 6 = 36px for "88:88:88" — well under 48).
  */
 function makeSevenSegFont(): FontDoc {
-  // Start with 8x8 font. Adjust baseline so glyphs can fill all 8 rows from
-  // top (row 0) to bottom (row 7). The default computePixelLayout sets
-  // baselineRow = 2 (rows from bottom), so rows above baseline = 6. We want
-  // 7 rows above baseline (so top 7 rows + 1 bottom = 8 total).
-  // Easiest: just draw in rows 0..7 and let the measurement rasterize to the
-  // font's metrics (which the exported TTF carries).
-  let doc = newTestFont(8, 8, 'Max7219Georgian');
-  // Update metrics so ascent = 7*cell, descent = -1*cell, lineGap = 0.
-  // The newTestFont layout uses unitsPerCell=128 for gridHeight 8.
-  // Override metrics to fit 8 rows exactly:
+  // 8x8 grid with the baseline one row up from the bottom: 7 rows above the
+  // baseline + 1 below = 8 total. descentRows=1 makes createNewFont set both
+  // the pixel template's baselineRow and the vertical metrics (ascent 7 cells,
+  // descent -1 cell) to match, so drawings and metrics agree — a glyph that
+  // fills all 8 grid rows measures exactly 8 px at size 8 with no clipping.
+  let doc = newTestFont(8, 8, 'Max7219Georgian', 1);
   const cell = doc.metrics.unitsPerEm / 8; // = 128
-  doc = {
-    ...doc,
-    metrics: {
-      ...doc.metrics,
-      ascent: Math.round(cell * 7), // 896
-      descent: -Math.round(cell * 1), // -128
-    },
-  };
 
   // For each digit (0-9) draw an 8x5 block of pixels (solid rectangle filling all 8 rows).
   // This gives tallest digit exactly 8, advance width = 5 pixels * cell = 640 fu → 5 px.
@@ -323,7 +313,6 @@ describe('MAX7219 validation against compiled TTF', () => {
     // Make a font whose digits only cover rows 2..7 (6px tall)
     let doc = newTestFont(8, 8, 'Short');
     const cell = doc.metrics.unitsPerEm / 8;
-    doc = { ...doc, metrics: { ...doc.metrics, ascent: Math.round(cell * 7), descent: -Math.round(cell * 1) } };
     for (const d of '0123456789') {
       doc = drawGlyph(doc, d.codePointAt(0)!, (bm) => {
         for (let y = 2; y < 8; y++) for (let x = 0; x < 4; x++) bm.set(x, y, 1);
@@ -343,7 +332,6 @@ describe('MAX7219 validation against compiled TTF', () => {
     // Make digits 9px wide (but still 8px tall) so 8*9 = 72 plus colons → > 48
     let doc = newTestFont(8, 8, 'Wide');
     const cell = doc.metrics.unitsPerEm / 8;
-    doc = { ...doc, metrics: { ...doc.metrics, ascent: Math.round(cell * 7), descent: -Math.round(cell * 1) } };
     for (const d of '0123456789') {
       doc = drawGlyph(doc, d.codePointAt(0)!, (bm) => {
         for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) bm.set(x, y, 1);
@@ -363,6 +351,109 @@ describe('MAX7219 validation against compiled TTF', () => {
     const v = validateMax7219Font(buffer, '0123456789:');
     expect(v.checks.find((c) => c.name === '"88:88:88" advance width ≤ 48 px')?.ok).toBe(false);
     expect(v.measuredTestStringWidthPx).toBeGreaterThan(48);
+  });
+});
+
+describe('MAX7219 measurement matches the drawn pixels', () => {
+  /**
+   * Regression: the validator used to mix bottom-up rasterizer rows with
+   * top-down panel rows and round ascent up (ceil), so a glyph that filled
+   * all 8 rows of a default 8×8 grid was reported as 6–7 px tall with a
+   * bogus "clipped at the top", even though the compiled TTF carries exactly
+   * 8 px of ink.
+   */
+  it('an 8-row glyph on a default 8×8 grid measures exactly 8 px', async () => {
+    let doc = newTestFont(8, 8, 'EightByEight');
+    const cell = doc.metrics.unitsPerEm / 8;
+    for (const d of '0123456789') {
+      doc = drawGlyph(doc, d.codePointAt(0)!, (bm) => {
+        for (let y = 0; y < 8; y++) for (let x = 0; x < 5; x++) bm.set(x, y, 1);
+      }).doc;
+      const g = doc.glyphs.find((g) => g.unicode === d.codePointAt(0)!)!;
+      g.advanceWidth = Math.round(5 * cell);
+      g.leftSideBearing = 0;
+    }
+    doc = drawGlyph(doc, ':'.codePointAt(0)!, (bm) => { bm.set(1, 2, 1); bm.set(1, 5, 1); }).doc;
+    {
+      const g = doc.glyphs.find((g) => g.unicode === ':'.codePointAt(0)!)!;
+      g.advanceWidth = Math.round(2 * cell);
+      g.leftSideBearing = 0;
+    }
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, '0123456789:');
+    expect(v.tallestDigitPx).toBe(8);
+    for (const d of '0123456789') {
+      const m = v.glyphs.get(d.codePointAt(0)!)!;
+      expect(m.heightPx).toBe(8);
+      expect(m.clippedTop).toBe(false);
+      expect(m.clippedBottom).toBe(false);
+    }
+    expect(v.checks.find((c) => c.name === 'Tallest digit is exactly 8 px')?.ok).toBe(true);
+    expect(v.checks.find((c) => c.name === 'No glyph clipped at the top')?.ok).toBe(true);
+    expect(v.checks.find((c) => c.name === 'No glyph clipped at the bottom')?.ok).toBe(true);
+    expect(v.ok).toBe(true);
+  });
+
+  it('maps each drawn row onto the same display row (top stays top)', async () => {
+    let doc = newTestFont(8, 8, 'RowFidelity');
+    // Bitmap row 0 is the BOTTOM row of the grid, row 7 the top. '0' gets a
+    // single pixel in the top row, '1' in the bottom row.
+    doc = drawGlyph(doc, 0x30, (bm) => bm.set(2, 7, 1)).doc;
+    doc = drawGlyph(doc, 0x31, (bm) => bm.set(2, 0, 1)).doc;
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, '01');
+    // Measured bitmaps are top-down: row 0 is the top of the 8-row display.
+    const zero = v.glyphs.get(0x30)!;
+    expect(zero.heightPx).toBe(1);
+    expect(zero.bitmap![0].some(Boolean)).toBe(true);
+    expect(zero.bitmap!.slice(1).flat().some(Boolean)).toBe(false);
+    const one = v.glyphs.get(0x31)!;
+    expect(one.heightPx).toBe(1);
+    expect(one.bitmap![7].some(Boolean)).toBe(true);
+    expect(one.bitmap!.slice(0, 7).flat().some(Boolean)).toBe(false);
+  });
+
+  it('8×8 LED matrix digits drawn full height measure 8 px', async () => {
+    let doc = createNewFont({
+      familyName: 'LedEight',
+      styleName: 'Regular',
+      gridWidth: 8,
+      gridHeight: 8,
+      led: defaultLedSpec(8, 8),
+    });
+    doc = drawGlyph(doc, 0x30, (bm) => {
+      for (let y = 0; y < 8; y++) for (let x = 0; x < bm.width; x++) bm.set(x, y, 1);
+    }).doc;
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, '0');
+    expect(v.tallestDigitPx).toBe(8);
+    const m = v.glyphs.get(0x30)!;
+    expect(m.heightPx).toBe(8);
+    expect(m.clippedTop).toBe(false);
+    expect(m.clippedBottom).toBe(false);
+  });
+
+  it('flags ink below the display and still counts it in the height', async () => {
+    // The pixel grid puts the baseline 2 rows above the bottom, but the
+    // metrics only reserve 1 row of descent: the drawing hangs one row low,
+    // so its bottom row falls below the 8-row display exactly as ESPHome
+    // would clip it. The measured height must still be the full 8 rows.
+    let doc = newTestFont(8, 8, 'LowHang');
+    const cell = doc.metrics.unitsPerEm / 8;
+    doc = {
+      ...doc,
+      metrics: { ...doc.metrics, ascent: Math.round(cell * 7), descent: -Math.round(cell * 1) },
+    };
+    doc = drawGlyph(doc, 0x30, (bm) => {
+      for (let y = 0; y < 8; y++) for (let x = 0; x < 5; x++) bm.set(x, y, 1);
+    }).doc;
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, '0');
+    const m = v.glyphs.get(0x30)!;
+    expect(m.heightPx).toBe(8);
+    expect(m.clippedBottom).toBe(true);
+    expect(m.clippedTop).toBe(false);
+    expect(v.checks.find((c) => c.name === 'No glyph clipped at the bottom')?.ok).toBe(false);
   });
 });
 

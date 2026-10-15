@@ -10,8 +10,8 @@ export function parseTtf(buffer: ArrayBuffer): any {
   return (Font.create(buffer, { type: 'ttf', hinting: true, kerning: true }) as unknown as { data: any }).data;
 }
 
-export function newTestFont(gridW = 8, gridH = 8, family = 'TestPixel'): FontDoc {
-  return createNewFont({ familyName: family, styleName: 'Regular', gridWidth: gridW, gridHeight: gridH });
+export function newTestFont(gridW = 8, gridH = 8, family = 'TestPixel', descentRows?: number): FontDoc {
+  return createNewFont({ familyName: family, styleName: 'Regular', gridWidth: gridW, gridHeight: gridH, descentRows });
 }
 
 /**
