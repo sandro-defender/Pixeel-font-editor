@@ -130,9 +130,15 @@ export interface ValidationResult {
 }
 
 /**
- * Convert a single point (x,y) in font units to pixel coordinates for a given
- * ppem. Returns {col, row} as integers (row measured from the top of the
- * em-box, which spans `ascentPx` above baseline and `ppem - ascentPx` below).
+ * Convert a single point (x,y) in font units to the pixel that contains it at
+ * the given scale. Pixel (col, row) covers x ∈ [col, col+1), y ∈ [row, row+1)
+ * scaled units, so both coordinates use floor (pixel identity — NOT nearest
+ * sample: a point on a cell boundary belongs to the cell above/right of it).
+ *
+ * `row` is returned measured from the TOP of the ppem-row panel: the panel
+ * spans `ascentPx` pixel rows above the baseline and `ppem - ascentPx` below,
+ * so the first pixel row above the baseline (pixel row 0 from the bottom) is
+ * panel row `ascentPx - 1`.
  */
 function ppemPoint(
   x: number,
@@ -140,10 +146,8 @@ function ppemPoint(
   scale: number,
   ascPx: number,
 ): { col: number; row: number } {
-  // FreeType convention: the top of the em box is at pixel row ceil(ascent*scale)-1
-  // and we round y=0 to the baseline row (ascentPx-1 from top).
-  const col = Math.floor(x * scale + 0.5); // rounded x
-  const row = ascPx - 1 - Math.floor(y * scale + 0.5);
+  const col = Math.floor(x * scale);
+  const row = ascPx - 1 - Math.floor(y * scale);
   return { col, row };
 }
 
@@ -167,9 +171,10 @@ function measureCompiledTtf(ttfBuffer: ArrayBuffer, glyphSet: string): {
   const ppem = MAX7219_PIXEL_SIZE;
   const scale = ppem / unitsPerEm;
   const gridRows = ppem;
-  // FreeType rounds the ascent to the nearest integer pixel: the top of the
-  // em box is at (ascPx-1) rows above the baseline.
-  const ascPx = Math.ceil(ascentFU * scale);
+  // FreeType rounds the scaled ascender to the nearest integer pixel
+  // (FT_PIX_ROUND): the baseline boundary sits at panel row ascPx from the
+  // top, so panel row r covers scaled y ∈ [ascPx - 1 - r, ascPx - r].
+  const ascPx = Math.floor(ascentFU * scale + 0.5);
   const measurements = new Map<number, GlyphMeasurement>();
   const cmap: Record<string, number> = ttf.cmap ?? {};
   const glyf: any[] = ttf.glyf ?? [];
@@ -282,19 +287,24 @@ function measureCompiledTtf(ttfBuffer: ArrayBuffer, glyphSet: string): {
     });
     const { bitmap } = coverageToBitmap(cov, gridW, gridH, 0.5);
 
-    // Extract the 8-row panel, track clipping.
+    // Extract the 8-row panel, track clipping. rasterizeCoverage numbers its
+    // rows bottom-up (row 0 = bottom of the big grid), while panel rows are
+    // top-down: big-grid row ry sits at panel row row0 + (gridH - 1 - ry).
     const panel: boolean[][] = Array.from({ length: gridRows }, () => Array(gridW).fill(false));
     let clippedTop = false, clippedBottom = false;
-    let topInk = gridRows, bottomInk = -1;
+    let topInk = Infinity, bottomInk = -Infinity;
     for (let ry = 0; ry < gridH; ry++) {
-      const panelRow = row0 + ry;
+      const panelRow = row0 + (gridH - 1 - ry);
       for (let cx = 0; cx < gridW; cx++) {
         if (!bitmap.get(cx, ry)) continue;
-        if (panelRow < 0) { clippedTop = true; continue; }
-        if (panelRow >= gridRows) { clippedBottom = true; continue; }
-        panel[panelRow][cx] = true;
+        if (panelRow < 0) clippedTop = true;
+        else if (panelRow >= gridRows) clippedBottom = true;
+        // Ink outside the panel still counts toward the glyph's real pixel
+        // height — otherwise a glyph clipped to 8 rows could never be flagged
+        // as "taller than 8 px".
         if (panelRow < topInk) topInk = panelRow;
         if (panelRow > bottomInk) bottomInk = panelRow;
+        if (panelRow >= 0 && panelRow < gridRows) panel[panelRow][cx] = true;
       }
     }
     let leftCol = gridW, rightCol = -1;
