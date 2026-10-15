@@ -17,8 +17,7 @@ afterEach(() => {
 
 describe('LED size selection', () => {
   it.each(['height', 'preset'])('halves strokes and baseline through the %s control', (control) => {
-    // The drawing is tested directly; jsdom has no canvas renderer.
-    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+    // Canvas drawing runs against the real @napi-rs/canvas backend (test/setup/canvas.ts).
     const spec = { rows: 16, cols: 12, spacing: 1, cellUnits: 100, descentRows: 4 };
     const base = createNewFont({ familyName: 'Resize', styleName: 'Regular', gridWidth: 12, gridHeight: 16, led: spec });
     const { doc, glyph } = drawGlyph(base, 65, () => {});
