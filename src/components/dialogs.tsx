@@ -238,15 +238,18 @@ export function NewFontDialog() {
       </Stack>
       <Stack spacing={1}>
         <Typography variant="subtitle2">License (auto-created)</Typography>
-        <SegmentedControl
-          ariaLabel="New font license"
+        <TextField
+          select
+          label="Standard license"
           value={licenseChoice}
-          options={[
-            { value: 'ofl', label: 'SIL OFL 1.1', tip: 'Open Font License (recommended for sharing)' },
-            { value: 'custom', label: 'None / custom', tip: 'No license added now — set one later in Info & license' },
-          ]}
-          onChange={(v) => setLicenseChoice(v as LicenseMode)}
-        />
+          onChange={(e) => setLicenseChoice(e.target.value as LicenseMode)}
+          slotProps={{ htmlInput: { 'aria-label': 'New font license' } }}
+          helperText="Choose a standard license or none."
+        >
+          <MenuItem value="ofl">SIL Open Font License 1.1</MenuItem>
+          <MenuItem value="mit">MIT License</MenuItem>
+          <MenuItem value="custom">None / custom</MenuItem>
+        </TextField>
         <Hint>
           Choosing a license here does NOT establish ownership. License, author and version can be edited later via <em>Font → Info &amp; license…</em>.
         </Hint>
@@ -534,16 +537,19 @@ export function MetadataDialog(props: { slot: Slot }) {
       </Section>
 
       <Section title="License">
-        <SegmentedControl
-          ariaLabel="License mode"
+        <TextField
+          select
+          label="License mode"
           value={licMode}
-          options={[
-            { value: 'imported', label: 'Keep imported', tip: 'Preserve whatever license the imported font carries (default)' },
-            { value: 'custom', label: 'Custom text', tip: 'Write your own license text' },
-            { value: 'ofl', label: 'SIL OFL template', tip: 'Generate a SIL Open Font License 1.1 document' },
-          ]}
-          onChange={setLicMode}
-        />
+          onChange={(e) => setLicMode(e.target.value as LicenseMode)}
+          slotProps={{ htmlInput: { 'aria-label': 'License mode' } }}
+          helperText="Choose how the font's license fields are set."
+        >
+          <MenuItem value="imported">Keep imported</MenuItem>
+          <MenuItem value="custom">Custom text</MenuItem>
+          <MenuItem value="ofl">SIL Open Font License 1.1</MenuItem>
+          <MenuItem value="mit">MIT License</MenuItem>
+        </TextField>
         {licMode === 'imported' && (
           <Hint>
             Current license fields are left exactly as imported: {doc.meta.licence ? `“${doc.meta.licence.slice(0, 120)}${doc.meta.licence.length > 120 ? '…' : ''}”` : '(none found)'}
@@ -569,6 +575,21 @@ export function MetadataDialog(props: { slot: Slot }) {
               <AccordionDetails>
                 <Box component="pre" sx={{ whiteSpace: 'pre-wrap', maxHeight: 260, overflow: 'auto', m: 0, fontSize: 12, color: 'text.secondary' }}>
                   {buildOFLLicense({ copyrightHolder: oflHolder, year: oflYear, reservedFontNames: oflReserved })}
+                </Box>
+              </AccordionDetails>
+            </Accordion>
+          </Stack>
+        )}
+        {licMode === 'mit' && (
+          <Stack spacing={2}>
+            <TextField label="Copyright holder" value={oflHolder} onChange={(e) => setOflHolder(e.target.value)} />
+            <Accordion disableGutters variant="outlined">
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Typography variant="body2">MIT License — full text</Typography>
+              </AccordionSummary>
+              <AccordionDetails>
+                <Box component="pre" sx={{ whiteSpace: 'pre-wrap', maxHeight: 260, overflow: 'auto', m: 0, fontSize: 12, color: 'text.secondary' }}>
+                  {standardLicenseText('mit', oflHolder)}
                 </Box>
               </AccordionDetails>
             </Accordion>
@@ -600,6 +621,7 @@ export function ExportDialog(props: { slot: Slot }) {
   const [buffer, setBuffer] = useState<ArrayBuffer | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [exportLog, setExportLog] = useState('');
 
   // MAX7219 Matrix Clock export state.
   const [m7219, setM7219] = useState<Max7219ExportSettings | null>(null);
@@ -642,6 +664,7 @@ export function ExportDialog(props: { slot: Slot }) {
     setError(null);
     setReport(null);
     setBuffer(null);
+    setExportLog(`TTF export started: ${new Date().toISOString()}\nPreserve hinting: ${preserveHinting}\nPreserve kerning: ${preserveKerning}\nBuilding and validating…`);
     setRunning(true);
     setBusy('Exporting TTF (building, writing, re-parsing to validate)…');
     try {
@@ -650,8 +673,26 @@ export function ExportDialog(props: { slot: Slot }) {
       setBuffer(out.buffer);
       setReport(out.report);
       if (!out.report.validation?.ok) setError('Validation reported problems — review the checks below before using this file.');
+      const logLines: string[] = [];
+      logLines.push(`TTF export finished: ${new Date().toISOString()}`);
+      logLines.push(`Bytes: ${out.report.bytes}`);
+      logLines.push(`Written tables: ${out.report.writtenTables.join(', ')}`);
+      logLines.push(`Preserved tables: ${out.report.preservedTables.join(', ')}`);
+      logLines.push(`Dropped tables: ${out.report.droppedTables.join(', ') || 'none'}`);
+      if (out.report.notes.length) logLines.push(`Notes:\n${out.report.notes.map((n) => ' - ' + n).join('\n')}`);
+      if (out.report.validation) {
+        logLines.push('\n## Validation checks');
+        for (const c of out.report.validation.checks) {
+          logLines.push(`${c.ok ? 'OK' : 'FAIL'} ${c.name}: ${c.detail}`);
+        }
+        logLines.push(`Overall: ${out.report.validation.ok ? 'PASS' : 'FAIL'}`);
+      }
+      setExportLog(logLines.join('\n'));
     } catch (err) {
-      if (mounted.current) setError(err instanceof Error ? err.message : String(err));
+      if (mounted.current) {
+        setError(err instanceof Error ? err.message : String(err));
+        setExportLog((log) => log + '\n\nFAILED\n' + (err instanceof Error ? err.stack || err.message : String(err)));
+      }
     } finally {
       if (mounted.current) setRunning(false);
       setBusy(null);
@@ -915,6 +956,20 @@ export function ExportDialog(props: { slot: Slot }) {
                 <Alert severity="error">Validation failed — inspect the checks above.</Alert>
               )}
             </>
+          )}
+          {exportLog && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2">Full validation log</Typography>
+              <Stack direction="row" spacing={1} sx={{ my: 1 }}>
+                <Button onClick={async () => {
+                  try { await navigator.clipboard.writeText(exportLog); toast('success', 'Full validation log copied.'); }
+                  catch { toast('warning', 'Clipboard unavailable — select the log text below and copy it manually.'); }
+                }}>Copy full log</Button>
+                <Button onClick={() => downloadBlob(new Blob([exportLog], { type: 'text/plain;charset=utf-8' }), 'TTF-validation-log.txt')}>Download log</Button>
+              </Stack>
+              <TextField fullWidth multiline minRows={6} maxRows={16} label="Complete validation log"
+                value={exportLog} slotProps={{ input: { readOnly: true } }} />
+            </Box>
           )}
         </Section>
       )}

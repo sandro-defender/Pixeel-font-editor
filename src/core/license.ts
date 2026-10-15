@@ -2,7 +2,7 @@
 import type { FontMeta } from './types';
 import { buildOFLLicense } from './oflText';
 
-export type LicenseMode = 'custom' | 'ofl' | 'imported';
+export type LicenseMode = 'custom' | 'ofl' | 'mit' | 'imported';
 
 export interface LicenseChoice {
   mode: LicenseMode;
@@ -37,6 +37,18 @@ export function applyLicense(meta: FontMeta, choice: LicenseChoice): FontMeta {
         `Copyright (c) ${choice.oflYear ?? new Date().getFullYear()}, ${choice.oflCopyrightHolder ?? ''}`.trim(),
     };
   }
+  if (choice.mode === 'mit') {
+    const holder = choice.oflCopyrightHolder ?? '';
+    const text = standardLicenseText('mit', holder);
+    return {
+      ...meta,
+      licence: text,
+      urlOfLicence: 'https://opensource.org/licenses/MIT',
+      copyright:
+        meta.copyright.trim() ||
+        `Copyright (c) ${new Date().getFullYear()}, ${holder}`.trim(),
+    };
+  }
   if (choice.mode === 'custom') {
     return {
       ...meta,
@@ -55,6 +67,9 @@ export function buildLicenseTxt(meta: FontMeta, choice?: LicenseChoice): string 
       year: choice.oflYear,
       reservedFontNames: choice.oflReservedNames,
     });
+  }
+  if (choice?.mode === 'mit') {
+    return standardLicenseText('mit', choice.oflCopyrightHolder ?? meta.designer ?? meta.fontFamily);
   }
   if (meta.licence.trim()) return meta.licence;
   const lines: string[] = [`${meta.fontFamily} ${meta.fontSubFamily}`];
