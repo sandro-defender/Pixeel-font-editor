@@ -452,6 +452,7 @@ export interface Max7219Package {
   validation: ValidationResult;
   blob: Blob;
   fileName: string;
+  reportContent: string;
   yamlContent: string;
   manifest: Record<string, unknown>;
 }
@@ -683,6 +684,7 @@ export async function buildMax7219Package(doc: FontDoc, settings: Max7219ExportS
     validation,
     blob,
     fileName,
+    reportContent,
     yamlContent,
     manifest,
   };

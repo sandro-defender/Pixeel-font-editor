@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { newTestFont, parseTtf } from './helpers';
 import { buildTtf } from '../src/core/fontCodec';
 import { deriveMetaFields, isValidPostScriptName, makePostScriptName, validateMeta } from '../src/core/metadata';
-import { applyLicense, buildLicenseTxt } from '../src/core/license';
+import { applyLicense, buildLicenseTxt, standardLicenseText } from '../src/core/license';
 import { buildOFLLicense, OFL_BODY } from '../src/core/oflText';
 
 describe('metadata & PostScript names', () => {
@@ -104,5 +104,21 @@ describe('license workflow', () => {
     expect(untouched.licence).toBe('Original license text.');
     const custom = applyLicense(doc.meta, { mode: 'custom', customText: 'New terms', customUrl: 'https://new.example' });
     expect(custom.licence).toBe('New terms');
+  });
+});
+
+describe('standard license templates', () => {
+  it('includes the complete OFL text and holder', () => {
+    const text = standardLicenseText('ofl', 'Test Author');
+    expect(text).toContain(OFL_BODY);
+    expect(text).toContain('Test Author');
+  });
+  it('includes MIT permissions, notice requirement and disclaimer', () => {
+    const text = standardLicenseText('mit', 'Test Author');
+    expect(text).toContain('MIT License');
+    expect(text).toContain(`Copyright (c) ${new Date().getFullYear()} Test Author`);
+    expect(text).toContain('The above copyright notice and this permission notice');
+    expect(text).toContain('SOFTWARE IS PROVIDED "AS IS"');
+    expect(text).toContain('SOFTWARE.');
   });
 });

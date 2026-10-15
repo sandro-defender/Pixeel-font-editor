@@ -44,7 +44,7 @@ import {
 } from '../core/ledMatrix';
 import { parseCodePointInput, describeCodePoint, isValidCodePoint, charFromCodePoint } from '../core/unicodeNames';
 import { validateMeta, deriveMetaFields } from '../core/metadata';
-import { applyLicense, buildLicenseTxt, LICENSING_DISCLAIMER, type LicenseMode } from '../core/license';
+import { applyLicense, buildLicenseTxt, standardLicenseText, LICENSING_DISCLAIMER, type LicenseMode } from '../core/license';
 import { buildOFLLicense, OFL_VERSION_NOTE } from '../core/oflText';
 import { exportFont } from '../services/exportService';
 import { DEFAULT_EXPORT_OPTIONS, resolveGlyphContours, type ExportReport } from '../core/fontCodec';
@@ -603,6 +603,8 @@ export function ExportDialog(props: { slot: Slot }) {
 
   // MAX7219 Matrix Clock export state.
   const [m7219, setM7219] = useState<Max7219ExportSettings | null>(null);
+  const [standardLicense, setStandardLicense] = useState('imported');
+  const [m7219Log, setM7219Log] = useState('');
   const [m7219Busy, setM7219Busy] = useState(false);
   const [m7219Preview, setM7219Preview] = useState<Awaited<ReturnType<typeof buildMax7219Package>> | null>(null);
   const [m7219Error, setM7219Error] = useState<string | null>(null);
@@ -618,6 +620,8 @@ export function ExportDialog(props: { slot: Slot }) {
   useEffect(() => {
     if (doc) setM7219(defaultMax7219Settings(doc));
     setM7219Preview(null);
+    setM7219Log('');
+    setStandardLicense('imported');
     setM7219Error(null);
   }, [doc?.fontId]);
 
@@ -684,6 +688,9 @@ export function ExportDialog(props: { slot: Slot }) {
   const updateM = (patch: Partial<Max7219ExportSettings>) => {
     if (!m7219) return;
     setM7219({ ...m7219, ...patch });
+    setM7219Preview(null);
+    setM7219Log('');
+    setM7219Error(null);
   };
 
   // True when the settings differ from the last built package (so we need to rebuild).
@@ -705,6 +712,7 @@ export function ExportDialog(props: { slot: Slot }) {
     try {
       setM7219Error(null);
       setM7219Preview(null);
+      setM7219Log(`MAX7219 validation started: ${new Date().toISOString()}\nSettings: ${JSON.stringify(m7219, null, 2)}\nCompiling and measuring font…`);
       setM7219Busy(true);
       setBusy('Validating MAX7219 export (compiling TTF, rasterizing @ 8px 1bpp)…');
       // Make sure we have a current compiled TTF first.
@@ -718,9 +726,15 @@ export function ExportDialog(props: { slot: Slot }) {
         }
       }
       const pkg = await buildMax7219Package(doc, m7219);
-      if (mounted.current) setM7219Preview(pkg);
+      if (mounted.current) {
+        setM7219Preview(pkg);
+        setM7219Log(pkg.reportContent + '\n\n## Raw measurements\n' + JSON.stringify([...pkg.validation.glyphs.values()], null, 2));
+      }
     } catch (err) {
-      if (mounted.current) setM7219Error(err instanceof Error ? err.message : String(err));
+      if (mounted.current) {
+        setM7219Error(err instanceof Error ? err.message : String(err));
+        setM7219Log((log) => log + '\n\nFAILED\n' + (err instanceof Error ? err.stack || err.message : String(err)));
+      }
     } finally {
       if (mounted.current) {
         setM7219Busy(false);
@@ -745,6 +759,7 @@ export function ExportDialog(props: { slot: Slot }) {
         const pkg = await buildMax7219Package(doc, m7219);
         if (mounted.current) {
           setM7219Preview(pkg);
+          setM7219Log(pkg.reportContent + '\n\n## Raw measurements\n' + JSON.stringify([...pkg.validation.glyphs.values()], null, 2));
           downloadBlob(pkg.blob, pkg.fileName);
           toast(pkg.validation.ok ? 'success' : 'warning', pkg.validation.ok
             ? `MAX7219 package downloaded: ${pkg.fileName} (all checks passed).`
@@ -760,6 +775,7 @@ export function ExportDialog(props: { slot: Slot }) {
       if (mounted.current) {
         const msg = err instanceof Error ? err.message : String(err);
         setM7219Error(msg);
+        setM7219Log(`MAX7219 export failed: ${new Date().toISOString()}\nSettings: ${JSON.stringify(m7219, null, 2)}\n${err instanceof Error ? err.stack || err.message : String(err)}`);
         setError(msg);
       }
     } finally {
@@ -959,17 +975,34 @@ export function ExportDialog(props: { slot: Slot }) {
               sx={{ gridColumn: { sm: '1 / -1' } }}
               helperText="Exact UTF-8 glyph string used in the YAML glyphs: list. Default includes digits, punctuation and Mkhedruli Georgian."
             />
+            <TextField select label="Standard license" value={standardLicense}
+              onChange={(e) => {
+                const id = e.target.value;
+                setStandardLicense(id);
+                if (id === 'imported') {
+                  const defaults = defaultMax7219Settings(doc);
+                  updateM({ licenseName: defaults.licenseName, licenseText: defaults.licenseText });
+                } else if (id === 'ofl' || id === 'mit') {
+                  updateM({ licenseName: id === 'ofl' ? 'SIL OFL 1.1' : 'MIT',
+                    licenseText: standardLicenseText(id, doc.meta.designer || doc.meta.fontFamily) });
+                }
+              }} helperText="Only choose a new license if you own the font or have permission to re-license it.">
+              <MenuItem value="imported">Keep imported license</MenuItem>
+              <MenuItem value="ofl">SIL Open Font License 1.1</MenuItem>
+              <MenuItem value="mit">MIT License</MenuItem>
+              <MenuItem value="custom">Custom license</MenuItem>
+            </TextField>
             <TextField
               label="License name"
               value={m7219.licenseName}
-              onChange={(e) => updateM({ licenseName: e.target.value })}
+              onChange={(e) => { setStandardLicense('custom'); updateM({ licenseName: e.target.value }); }}
               error={!m7219.licenseName.trim()}
               helperText={m7219.licenseName.trim() ? 'Short SPDX-style name (e.g. SIL OFL 1.1, CC BY-SA 3.0).' : 'Required — e.g. “SIL OFL 1.1”, “CC BY-SA 3.0”. We never invent a license.'}
             />
             <TextField
               label="License text"
               value={m7219.licenseText}
-              onChange={(e) => updateM({ licenseText: e.target.value })}
+              onChange={(e) => { setStandardLicense('custom'); updateM({ licenseText: e.target.value }); }}
               multiline
               minRows={3}
               error={!m7219.licenseText.trim()}
@@ -981,6 +1014,20 @@ export function ExportDialog(props: { slot: Slot }) {
             <div>build macro: <code>{`MAX7219_FONT_${m7219.slug.replace(/-/g, '_').toUpperCase()}`}</code></div>
             <div>asset path: <code>fonts/{m7219.slug}/{m7219.ttfFileName}</code></div>
           </Box>
+          {m7219Log && (
+            <Box sx={{ mt: 2 }}>
+              <Typography variant="subtitle2">Full validation log</Typography>
+              <Stack direction="row" spacing={1} sx={{ my: 1 }}>
+                <Button onClick={async () => {
+                  try { await navigator.clipboard.writeText(m7219Log); toast('success', 'Full validation log copied.'); }
+                  catch { toast('warning', 'Clipboard unavailable — select the log text below and copy it manually.'); }
+                }}>Copy full log</Button>
+                <Button onClick={() => downloadBlob(new Blob([m7219Log], { type: 'text/plain;charset=utf-8' }), 'MAX7219-validation-log.txt')}>Download log</Button>
+              </Stack>
+              <TextField fullWidth multiline minRows={8} maxRows={20} label="Complete validation log"
+                value={m7219Log} slotProps={{ input: { readOnly: true } }} />
+            </Box>
+          )}
           {m7219Error && <Alert severity="error" sx={{ mt: 2 }}>{m7219Error}</Alert>}
           {!m7219.licenseName.trim() && (
             <Alert severity="warning" sx={{ mt: 2 }}>

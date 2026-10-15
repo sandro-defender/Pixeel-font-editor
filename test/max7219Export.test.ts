@@ -180,6 +180,12 @@ describe('MAX7219 YAML and manifest generation', () => {
     const doc = withOflLicense(makeSevenSegFont());
     const s = settingsFor(doc);
     const pkg = await buildMax7219Package(doc, s);
+    expect(pkg.reportContent).toContain('## Checks');
+    expect(pkg.reportContent).toContain('## Per-glyph rasterization');
+    const JSZip = (await import("jszip")).default;
+    const reportZip = await JSZip.loadAsync(pkg.blob);
+    expect(await reportZip.file('EXPORT-REPORT.md')!.async('string')).toBe(pkg.reportContent);
+
 
     expect(pkg.yamlContent).toContain('type: web');
     expect(pkg.yamlContent).toContain('url: ${fonts_base_url}/max7219-georgian/');
