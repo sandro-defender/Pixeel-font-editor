@@ -102,7 +102,10 @@ describe('new font: derived names, version, author and license', () => {
 
     type(/Family name/i, 'Unlicensed');
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /None \/ custom/i }));
+      fireEvent.mouseDown(screen.getByRole('combobox', { name: /Standard license/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('option', { name: /None \/ custom/i }));
     });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Create font/i }));
