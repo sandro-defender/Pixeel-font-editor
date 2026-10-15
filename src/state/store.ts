@@ -1,6 +1,7 @@
 /** Global application state (zustand). */
 import { create } from 'zustand';
 import type { FontDoc, GlyphDoc, Slot, WorkspaceSettings } from '../core/types';
+import type { GlyphCategory } from '../core/charSets';
 import { makeId } from '../core/types';
 
 /**
@@ -44,6 +45,7 @@ export type ModalState =
   | { type: 'verticalMetrics'; slot: Slot }
   | { type: 'unicodeMappings'; slot: Slot; glyphId: string }
   | { type: 'kerning'; slot: Slot; left?: string; right?: string }
+  | { type: 'characterSets'; slot: Slot; focus?: 'coverage' | 'add' | 'largeDigits' }
   | { type: 'help' };
 
 /** Copy leaves the source untouched; move also removes the copied glyphs from the source. */
@@ -60,6 +62,8 @@ interface FontSlotUI {
   glyphId: string | null;
   glyphListSearch: string;
   glyphListFilter: 'all' | 'mapped' | 'unmapped' | 'multi' | 'edited';
+  /** Character-set navigation tab of the glyph grid (English, Georgian, …). */
+  glyphListCategory: GlyphCategory;
   multiSelected: string[];
   zoom: number;
   tool: 'pencil' | 'eraser' | 'fill' | 'line' | 'rect' | 'select' | 'wand';
@@ -162,6 +166,7 @@ export interface AppStore {
   setMultiSelect: (slot: Slot, ids: string[]) => void;
   setListSearch: (slot: Slot, q: string) => void;
   setListFilter: (slot: Slot, f: FontSlotUI['glyphListFilter']) => void;
+  setListCategory: (slot: Slot, c: GlyphCategory) => void;
   setZoom: (slot: Slot, zoom: number) => void;
   setTool: (slot: Slot, tool: FontSlotUI['tool']) => void;
   setOverlayGlyph: (slot: Slot, id: string | null) => void;
@@ -192,6 +197,7 @@ const defaultSlotUI = (): FontSlotUI => ({
   glyphId: null,
   glyphListSearch: '',
   glyphListFilter: 'all',
+  glyphListCategory: 'all',
   multiSelected: [],
   zoom: 16,
   tool: 'pencil',
@@ -422,6 +428,8 @@ export const useStore = create<AppStore>((set, get) => ({
     set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], glyphListSearch: q } } })),
   setListFilter: (slot, f) =>
     set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], glyphListFilter: f } } })),
+  setListCategory: (slot, c) =>
+    set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], glyphListCategory: c } } })),
   setZoom: (slot, zoom) =>
     set((s) => ({ ui: { ...s.ui, [slot]: { ...s.ui[slot], zoom: Math.min(64, Math.max(2, zoom)) } } })),
   setTool: (slot, tool) =>

@@ -15,6 +15,8 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | Workspaces | Two independent fonts (Font A / Font B), side-by-side comparison, per-font export |
 | Import | `.ttf`, `.otf`, **`.woff`, `.woff2`** and **`.bdf`** via file picker or drag & drop (`.otf`/CFF is converted to quadratic curves; WOFF/WOFF2 are decompressed in your browser, no server; **BDF bitmap fonts open as editable pixel fonts** with the cell size, baseline and metrics detected); **pixel fonts are detected** — the importer finds the cell size at which every outline lands on the lattice and offers a lossless conversion |
 | Glyph browser | Searchable grid with previews, Unicode values and names; create / duplicate / delete; re-assign Unicode with conflict validation; `.notdef` is always preserved; unmapped glyphs are visually distinct; add the 33 modern Mkhedruli starter glyphs or all 172 assigned Georgian letters across Mkhedruli, Mtavruli, Asomtavruli and Nuskhuri |
+| Character sets & coverage | Import any font and see per set how many characters are **present / blank / missing** — English upper/lower case, the 33 modern Georgian Mkhedruli letters (U+10D0–U+10F0), standard digits, **double-size alternative digits** and common punctuation. A character counts as present only when its glyph really has artwork (a mapping to `.notdef` or an empty grid is reported as missing/blank). *Add Character Sets* completes one or several sets in a single undoable step — existing glyphs are kept by default, new characters are editable blank grids (or a copy of a template at ×1/×2), *Fill blanks* and *Overwrite* are explicit (overwriting a design asks for confirmation), and every missing character can also be added individually from the *Missing Glyphs* tab |
+| Double-size digits | A **configurable** alternative-digit set (default PUA U+E000–U+E009) with its own glyphs, so regular and large digits can be used side by side. Workflow: add the set → *Copy* a standard digit into its counterpart → *×2 nearest-neighbour* → edit independently. Changing the mapping **moves** the existing glyphs (artwork, advances and names stay), refuses code points that already belong to another character, and asks before anything is replaced; insert the large digits in the preview from the Sets panel |
 | Pixel editor | 8×8, 16×16, 32×32 or custom grids (≤128); pencil, eraser, fill, **magic wand (W)**, line, rectangle, selection; **symmetry modes** (H/V/quad/radial) with guides; **tile preview 3×3 + seamless**; copy/cut/paste/move; shift, flip, rotate, invert, clear; undo/redo; zoom with grid lines; **keyboard cursor** (arrows move it, Space paints, Shift+Space erases, T toggles); **hover coordinate readout** and **index rulers**; **right-drag erases**; reference overlay for tracing; touch/pointer drawing; live actual-size + enlarged previews; baseline/ascent/descent/origin/advance guides; explicit crop/pad vs resample when resizing a grid; text-art and LED column-byte entry (*Pixel code…*); **local glyph designer** with reference fonts, Georgian character sets, and width/height/weight/slant/position controls |
 | Reference fonts | Drop TTF/OTF examples into `public/fonts/` and index them with `npm run fonts:catalog` (production builds index automatically), or load a font file directly in the glyph designer; sample any supported letter/number and place the styled bitmap into the selected pixel glyph. Everything stays in the browser. |
 | LED matrix fonts | Optional exact-pixel mode per font: fixed grid height, one integer unit size per lit pixel, glyph origins on whole-pixel boundaries, advance = (width + spacing) × pixel size; an LED dot preview; *Snap to LED grid* for vector glyphs; export checks that verify every glyph (errors for off-grid data, warnings for advances) |
@@ -113,6 +115,29 @@ Georgian names/search cover Mkhedruli, Mtavruli, Asomtavruli and Nuskhuri. The
 points; **Aa+** stays a smaller starter set with the modern 33-letter Mkhedruli
 alphabet.
 
+## Adding character sets (Georgian and double-size digits)
+
+*Character coverage & sets…* (Font menu, the **Sets** side tab, the *Sets* button above
+the glyph grid, or the command palette) reports, per required set, how many characters
+exist: **present** = the glyph has real artwork, **blank** = the code point is mapped but
+the glyph is empty, **missing** = no glyph at all (`.notdef` counts as missing). The one
+exception is a space with an advance width — there is nothing to draw. The report is
+computed from the glyphs every time, never stored, so it can never drift from the font.
+
+*Add Character Sets* writes the missing characters of one or several sets in one step:
+
+- **Characters that already exist** — *Keep as is* (default), *Fill blanks* (only blank
+  glyphs get the template), or *Overwrite*. Overwrite only replaces a design when the plan
+  has a template that belongs to that character (the matching standard digit, or a
+  template glyph you pick), and it always asks for confirmation naming the affected
+  characters. Nothing is ever replaced silently; one <kbd>Ctrl+Z</kbd> undoes the batch.
+- **New glyphs start** — *Blank grid* (default, marked “blank — still needs drawing” in the
+  browser until you draw it) or *Copy template* at ×1 / ×2 nearest-neighbour.
+- **Alternative-digit mapping** — 10 code points, validated (no duplicates, no standard
+  digits, no control characters, nothing already owned by another character). Changing it
+  **moves** the existing large-digit glyphs to the new code points, keeping artwork,
+  advance widths and names.
+
 ## Converting a font to pixels
 
 *Convert to pixel grid…* (Font menu, or the editor toolbar for a single glyph) rebuilds
@@ -163,7 +188,7 @@ npm run dev          # http://localhost:5173
 ### Tests
 
 ```bash
-npm test             # 346 unit/integration tests (vitest)
+npm test             # 434 unit/integration tests (vitest)
 npm run verify:pages # builds with a subpath base and serves it under /test-repo/
 ```
 
@@ -204,6 +229,17 @@ empty grid, the frame is derived from the glyph's own ink rather than the line
 metrics, and converting a whole font to an LED matrix maps the design onto the
 matrix (no clipped letter tops, no vanished glyphs) — including re-snapping a
 single glyph afterwards and copying glyphs into an LED font.
+
+Character-set coverage has its own suite: the set definitions (33 Mkhedruli letters
+with U+10F1–U+10F5 excluded, the PUA digit range, punctuation), the report on real
+imports (Lato reports `Georgian 0/33`), blank/`.notdef` handling, the single-character
+add, one undo step per batch with byte-identical untouched glyphs, template copies and
+×2 nearest-neighbour scaling, the alternative-digit mapping (validate, move, keep the
+artwork, refuse taken code points), broken mappings falling back to the default in old
+project files, and the end-to-end proof: a font extended with the new sets is exported
+and **re-opened**, checking the cmap, the real outlines, the advances and the per-set
+coverage of the written file — including a readable failure when a code point would have
+two owners.
 
 ## Building
 

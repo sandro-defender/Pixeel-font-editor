@@ -26,7 +26,10 @@ import { transformContours, contourBounds } from './contours';
 import { b64ToBytes } from './bitmap';
 import { checkLedFont, ledLabel } from './ledMatrix';
 import { effectiveVertical } from './verticalMetrics';
-import { allUnicodes } from './unicodeMap';
+import { describeCodePoint } from './unicodeNames';
+import { allUnicodes, duplicateMappings } from './unicodeMap';
+import { analyzeCoverage, coverageSummaryLine, type CoverageReport } from './coverage';
+import { pointsForSet } from './charSets';
 import { unwrapFont } from './woff';
 import { buildKernTable, effectivePairs, kerningFromTtf, kerningOf, kerningToIndexPairs, parseKernTable } from './kerning';
 
@@ -78,6 +81,8 @@ export interface ImportResult {
   doc: FontDoc;
   sourceTtf: TtfLike;
   warnings: string[];
+  /** Character coverage of the imported file (see core/coverage.ts). */
+  coverage: CoverageReport;
 }
 
 const NAME_KEYS: Array<keyof FontMeta> = [
@@ -141,6 +146,7 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
       sourceContours: contours.length ? contours.map((c) => c.map((p) => ({ ...p }))) : null,
       edited: false,
       srcIndex: i,
+      origin: 'imported',
     });
   }
 
@@ -228,7 +234,16 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
     warnings.push(`Opened from ${container === 'woff' ? 'WOFF' : 'WOFF2'}: it was decompressed in your browser (nothing was uploaded). Export writes a plain .ttf.`);
   }
   if (extraCount) warnings.push(`${extraCount} additional code point mapping(s) shared with another code point of the same glyph were imported (see the glyph's Unicode mappings).`);
-  return { doc, sourceTtf: ttf, warnings };
+
+  // Character coverage of the file that was just read (see core/coverage.ts).
+  // The caller turns this into the user-facing message; importFont only reports
+  // that nothing editable could be read at all.
+  const coverage = analyzeCoverage(doc);
+  if (coverage.unusable) {
+    warnings.push('No editable glyphs could be read from this font — character sets cannot be added to it.');
+  }
+
+  return { doc, sourceTtf: ttf, warnings, coverage };
 }
 
 export const CORE_WRITABLE = new Set(['glyf', 'loca', 'head', 'hhea', 'hmtx', 'maxp', 'cmap', 'name', 'post', 'OS/2']);
@@ -372,6 +387,19 @@ export function resolveGlyphContours(glyph: GlyphDoc, all: GlyphDoc[]): Contour[
 export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: ExportReport } {
   const { doc, options } = input;
   const notes: string[] = [];
+
+  // A cmap holds exactly one glyph per code point: refuse to write a document
+  // that has two owners instead of failing deep inside the writer.
+  const duplicates = duplicateMappings(doc);
+  if (duplicates.length) {
+    const first = duplicates[0];
+    throw new Error(
+      `${describeCodePoint(first.codePoint)} is mapped to two glyphs (${first.owners
+        .map((o) => `“${o.name}”`)
+        .join(' and ')})${duplicates.length > 1 ? `, and ${duplicates.length - 1} more code point(s) are duplicated` : ''}. ` +
+        'Every code point needs exactly one glyph — remove the extra mapping in the “Unicode mappings…” dialog, then export again.',
+    );
+  }
 
   // Start from the original parsed font when available so that GPOS/kern/
   // hinting/name extras survive; otherwise use the blank template.
@@ -520,10 +548,89 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
     validation: null,
   };
 
+  // A configured but not-yet-created alternative digit set is worth a note: the
+  // mapping is only meaningful once the glyphs exist.
+  const largeMissing = pointsForSet('largeDigits', doc).filter((cp) => {
+    const owner = doc.glyphs.find((g) => g.unicode === cp || g.extraUnicodes?.includes(cp));
+    return !owner || owner.name === '.notdef';
+  });
+  if (largeMissing.length) {
+    notes.push(
+      `${largeMissing.length} of the 10 alternative (double-size) digits have no glyph yet in this font (${largeMissing
+        .map((cp) => 'U+' + cp.toString(16).toUpperCase().padStart(4, '0'))
+        .join(', ')}). They are exported as soon as you add them.`,
+    );
+  }
+
   if (options.validate) {
     report.validation = validateExport(buffer, doc, kerningRewritten ? effectivePairs(kerningOf(doc)).length : undefined);
   }
   return { buffer, report };
+}
+
+/**
+ * Re-open an exported font exactly like an importer would: the sfnt is parsed
+ * again from the bytes and its character map, glyph count and per-glyph data
+ * are returned. This is the "verify the actual file" primitive — export
+ * validation and the tests both use it instead of trusting the editor state.
+ */
+export interface ReopenedFont {
+  ttf: TtfLike;
+  cmap: Record<number, number>;
+  glyphCount: number;
+  /** Parsed glyph record for a code point (null when it is not mapped). */
+  glyphAt(codePoint: number): Record<string, any> | null;
+}
+
+export function reopenFont(buffer: ArrayBuffer): ReopenedFont {
+  const font = Font.create(buffer, { type: 'ttf', hinting: true, kerning: true }) as unknown as FontInstance;
+  const ttf = font.data as unknown as TtfLike;
+  const cmap = (ttf.cmap ?? {}) as unknown as Record<number, number>;
+  const glyphAt = (cp: number): Record<string, any> | null => {
+    const idx = cmap[cp];
+    if (idx === undefined || idx === null) return null;
+    return (ttf.glyf as Array<Record<string, any>>)[idx] ?? null;
+  };
+  return { ttf, cmap, glyphCount: (ttf.glyf ?? []).length, glyphAt };
+}
+
+/** Per-set result of re-opening an exported font. */
+export interface ExportedCoverageCheck {
+  set: string;
+  expected: number;
+  found: number;
+  missing: number[];
+  detail: string;
+}
+
+/**
+ * Verify the character coverage of an exported font by re-parsing the file and
+ * looking every required code point up in its cmap — independent of the editor
+ * state, so a glyph that was never written shows up here.
+ */
+export function verifyExportedCoverage(buffer: ArrayBuffer, doc: FontDoc): ExportedCoverageCheck[] {
+  const { cmap } = reopenFont(buffer);
+  const report = analyzeCoverage(doc);
+  return report.sets.map((s) => {
+    const missing: number[] = [];
+    let found = 0;
+    for (const cp of s.points) {
+      if (cmap[cp] === undefined) {
+        missing.push(cp);
+        continue;
+      }
+      found += 1;
+    }
+    return {
+      set: s.def.label,
+      expected: s.points.length,
+      found,
+      missing,
+      detail: `${found}/${s.points.length} ${s.def.label} code point(s) present in the exported cmap${
+        missing.length ? `, missing ${missing.slice(0, 8).map((cp) => 'U+' + cp.toString(16).toUpperCase().padStart(4, '0')).join(' ')}` : ''
+      }.`,
+    };
+  });
 }
 
 /** Re-parse an exported font and verify representative properties. */
@@ -548,6 +655,91 @@ export function validateExport(buffer: ArrayBuffer, doc: FontDoc, expectedKernPa
       if (!rg || Math.round(rg.advanceWidth ?? -1) !== Math.round(g.advanceWidth)) bad += 1;
     }
     push('cmap + metrics sample', bad === 0, `${sample.length - bad}/${sample.length} mapped glyphs verified (unicode → glyph index, advance width).`);
+
+    // --- glyphs the editor created or changed: the exported file must really carry them
+    const touched = doc.glyphs.filter((g) => g.unicode !== null && (g.origin === 'added' || g.edited));
+    if (touched.length) {
+      const problems: string[] = [];
+      let verified = 0;
+      for (const g of touched) {
+        const idx = cmap[g.unicode!];
+        const rg = idx === undefined ? null : ttf.glyf[idx];
+        if (!rg) {
+          problems.push(`“${g.name}” (U+${g.unicode!.toString(16).toUpperCase()}) is missing from the exported cmap`);
+          continue;
+        }
+        if (Math.round(rg.advanceWidth ?? -1) !== Math.round(g.advanceWidth)) {
+          problems.push(`“${g.name}” advance ${rg.advanceWidth} ≠ ${g.advanceWidth}`);
+          continue;
+        }
+        if (g.kind === 'compound' && g.compound?.length && !rg.compound) {
+          problems.push(`“${g.name}” lost its composite structure`);
+          continue;
+        }
+        if (!rg.compound) {
+          const expected = resolveGlyphContours(g, doc.glyphs).length;
+          const got = Array.isArray(rg.contours) ? rg.contours.length : 0;
+          if (got !== expected) {
+            problems.push(`“${g.name}” has ${got} of ${expected} outline(s) in the file`);
+            continue;
+          }
+        }
+        verified += 1;
+      }
+      push(
+        'Added & edited glyph outlines',
+        problems.length === 0,
+        problems.length
+          ? `${verified}/${touched.length} verified. ${problems.slice(0, 3).join('; ')}${problems.length > 3 ? '; …' : ''}`
+          : `All ${touched.length} glyph(s) added or edited in Pixeel are in the file with their outlines and advance widths.`,
+      );
+    }
+
+    // --- per-set coverage measured on the re-opened file, not on the editor state.
+    //     Characters the font never had are reported, not treated as errors; a
+    //     character that exists in the editor but not in the file is an error.
+    const docCoverage = analyzeCoverage(doc);
+    const coverage = verifyExportedCoverage(buffer, doc);
+    const docIndex = new Map<string, number>();
+    doc.glyphs.forEach((g, i) => docIndex.set(g.id, i));
+    const dropped: number[] = [];
+    for (const set of docCoverage.sets) {
+      for (const entry of set.entries) {
+        if (entry.status === 'missing') continue;
+        const mapped = cmap[entry.codePoint];
+        // the code point must be in the file *and* point at the glyph that owns
+        // it in the editor (a duplicate mapping can only point at one of them)
+        if (mapped === undefined || mapped !== docIndex.get(entry.glyphId!)) dropped.push(entry.codePoint);
+      }
+    }
+    push(
+      'Character coverage',
+      dropped.length === 0,
+      `${coverage.map((c) => `${c.set} ${c.found}/${c.expected}`).join(' · ')}${
+        dropped.length
+          ? ` — ${dropped.length} character(s) of the editor are missing from the file: ${dropped
+              .slice(0, 8)
+              .map((cp) => 'U+' + cp.toString(16).toUpperCase().padStart(4, '0'))
+              .join(' ')}`
+          : ''
+      }.`,
+    );
+
+    // --- every code point of a glyph must survive (multi mappings included) and
+    //     every alternative digit that exists must be mapped
+    const altOwned = docCoverage.setById.largeDigits.entries
+      .filter((e) => e.status !== 'missing')
+      .map((e) => e.codePoint);
+    const altOk = altOwned.every((cp) => cmap[cp] !== undefined);
+    push(
+      'Alternative (large) digits',
+      altOk,
+      altOwned.length
+        ? `${altOwned.length}/10 large digit(s) mapped in the file (${altOwned
+            .map((cp) => 'U+' + cp.toString(16).toUpperCase().padStart(4, '0'))
+            .join(', ')}).`
+        : 'No alternative digit glyphs in this font yet (they are optional).',
+    );
     // every extra code point must point at the same glyph as its primary
     const multi = doc.glyphs.map((g, i) => ({ g, i })).filter(({ g }) => (g.extraUnicodes?.length ?? 0) > 0);
     if (multi.length) {
