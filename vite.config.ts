@@ -72,6 +72,9 @@ export default defineConfig(({ mode }) => {
     test: {
       environment: 'node',
       include: ['test/**/*.test.ts', 'test/**/*.test.tsx'],
+      // Real 2D-canvas backend (@napi-rs/canvas) for jsdom test files; a no-op
+      // in the node environment. See the file for the integration details.
+      setupFiles: ['test/setup/canvas.ts'],
       testTimeout: 60000,
       hookTimeout: 60000,
     },

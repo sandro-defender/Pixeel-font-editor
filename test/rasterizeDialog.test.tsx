@@ -26,7 +26,7 @@ afterEach(() => {
 
 /** A pixel font turned back into outlines — i.e. what an import looks like. */
 function importedPixelFont(): FontDoc {
-  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+  // Canvas previews render against the real @napi-rs/canvas backend (test/setup/canvas.ts).
   const base = createNewFont({ familyName: 'Detected', styleName: 'Regular', gridWidth: 8, gridHeight: 16 });
   const art = asciiToBitmap([
     '..####..',
