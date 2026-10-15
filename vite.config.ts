@@ -49,6 +49,17 @@ function readAppVersion(): string {
   }
 }
 
+/** Short commit of the build, so a pasted debug log tells which deploy produced it. */
+function readBuildCommit(): string {
+  const fromCi = process.env.GITHUB_SHA;
+  if (fromCi) return fromCi.slice(0, 7);
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const base = resolveBase(env.VITE_BASE_PATH, env.VITE_BUILD_PAGES === '1', repoSlugFromGit());
@@ -61,6 +72,7 @@ export default defineConfig(({ mode }) => {
     },
     define: {
       __APP_VERSION__: JSON.stringify(appVersion),
+      __APP_COMMIT__: JSON.stringify(readBuildCommit()),
     },
     server: { host: '0.0.0.0', port: 5173, allowedHosts: true },
     preview: { host: '0.0.0.0', port: 4173, allowedHosts: true },

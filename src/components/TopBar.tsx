@@ -36,7 +36,7 @@ function Brand() {
       <Typography variant="h6" component="span" sx={{ fontWeight: 800, letterSpacing: 0.5, fontSize: 18 }}>
         Pixeel
       </Typography>
-      <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, opacity: 0.75, ml: 0.25 }} title={`App version v${__APP_VERSION__}`}>
+      <Typography variant="caption" color="text.secondary" sx={{ fontSize: 11, opacity: 0.75, ml: 0.25 }} title={`App version v${__APP_VERSION__} (build ${__APP_COMMIT__})`}>
         v{__APP_VERSION__}
       </Typography>
     </Stack>

@@ -21,6 +21,9 @@ import { deriveMetaFields } from '../src/core/metadata';
 import type { FontDoc } from '../src/core/types';
 import { exportFont } from '../src/services/exportService';
 import { DEFAULT_EXPORT_OPTIONS } from '../src/core/fontCodec';
+import { buildMax7219DebugLog, editorDiagnosis } from '../src/services/max7219DebugLog';
+import { applyLedMatrix } from '../src/state/glyphActions';
+import { Font } from 'fonteditor-core';
 
 /**
  * Build a font where digits are full 8-pixel tall glyphs using all rows, so
@@ -402,21 +405,26 @@ describe('MAX7219 measurement matches the drawn pixels', () => {
 
   it('maps each drawn row onto the same display row (top stays top)', async () => {
     let doc = newTestFont(8, 8, 'RowFidelity');
-    // Bitmap row 0 is the BOTTOM row of the grid, row 7 the top. '0' gets a
-    // single pixel in the top row, '1' in the bottom row.
-    doc = drawGlyph(doc, 0x30, (bm) => bm.set(2, 7, 1)).doc;
-    doc = drawGlyph(doc, 0x31, (bm) => bm.set(2, 0, 1)).doc;
+    // Bitmap row 0 is the BOTTOM row of the grid, row 7 the top. '0' fills
+    // all 8 rows, so the clock (which centres text on the ink of '0') shows
+    // the grid's rows 1:1; '1' has a single pixel in the top row, '2' in the
+    // bottom row.
+    doc = drawGlyph(doc, 0x30, (bm) => { for (let y = 0; y < 8; y++) bm.set(2, y, 1); }).doc;
+    doc = drawGlyph(doc, 0x31, (bm) => bm.set(2, 7, 1)).doc;
+    doc = drawGlyph(doc, 0x32, (bm) => bm.set(2, 0, 1)).doc;
     const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
-    const v = validateMax7219Font(buffer, '01');
-    // Measured bitmaps are top-down: row 0 is the top of the 8-row display.
-    const zero = v.glyphs.get(0x30)!;
-    expect(zero.heightPx).toBe(1);
-    expect(zero.bitmap![0].some(Boolean)).toBe(true);
-    expect(zero.bitmap!.slice(1).flat().some(Boolean)).toBe(false);
+    const v = validateMax7219Font(buffer, '012');
+    // Measured bitmaps are top-down: row 0 is the top LED row.
     const one = v.glyphs.get(0x31)!;
     expect(one.heightPx).toBe(1);
-    expect(one.bitmap![7].some(Boolean)).toBe(true);
-    expect(one.bitmap!.slice(0, 7).flat().some(Boolean)).toBe(false);
+    expect(one.displayTopRow).toBe(0);
+    expect(one.bitmap![0].some(Boolean)).toBe(true);
+    expect(one.bitmap!.slice(1).flat().some(Boolean)).toBe(false);
+    const two = v.glyphs.get(0x32)!;
+    expect(two.heightPx).toBe(1);
+    expect(two.displayTopRow).toBe(7);
+    expect(two.bitmap![7].some(Boolean)).toBe(true);
+    expect(two.bitmap!.slice(0, 7).flat().some(Boolean)).toBe(false);
   });
 
   it('8×8 LED matrix digits drawn full height measure 8 px', async () => {
@@ -439,11 +447,12 @@ describe('MAX7219 measurement matches the drawn pixels', () => {
     expect(m.clippedBottom).toBe(false);
   });
 
-  it('flags ink below the display and still counts it in the height', async () => {
+  it('does not flag a drawing that sits lower than the metrics: the clock centres on the ink of 0', async () => {
     // The pixel grid puts the baseline 2 rows above the bottom, but the
-    // metrics only reserve 1 row of descent: the drawing hangs one row low,
-    // so its bottom row falls below the 8-row display exactly as ESPHome
-    // would clip it. The measured height must still be the full 8 rows.
+    // metrics only reserve 1 row of descent, so the drawing hangs one row
+    // below ESPHome's text box. The clock never uses that box: it centres
+    // every text on the ink of '0', so all 8 rows still show. (This used to
+    // be reported as "clipped at the bottom".)
     let doc = newTestFont(8, 8, 'LowHang');
     const cell = doc.metrics.unitsPerEm / 8;
     doc = {
@@ -457,9 +466,39 @@ describe('MAX7219 measurement matches the drawn pixels', () => {
     const v = validateMax7219Font(buffer, '0');
     const m = v.glyphs.get(0x30)!;
     expect(m.heightPx).toBe(8);
-    expect(m.clippedBottom).toBe(true);
+    expect(m.displayTopRow).toBe(0);
+    expect(m.clippedBottom).toBe(false);
     expect(m.clippedTop).toBe(false);
-    expect(v.checks.find((c) => c.name === 'No glyph clipped at the bottom')?.ok).toBe(false);
+    expect(v.checks.find((c) => c.name === 'No glyph clipped at the bottom')?.ok).toBe(true);
+    expect(v.checks.find((c) => c.name === 'No glyph clipped at the top')?.ok).toBe(true);
+  });
+
+  it('flags ink below the display relative to 0 and still counts it in the height', async () => {
+    // '0' is 6 rows tall at the top of the grid, '1' fills all 8 rows. The
+    // clock centres on '0' (LED rows 1–6), so '1' starts on row 1 too and
+    // its bottom row falls off the display.
+    let doc = newTestFont(8, 8, 'LowDigit');
+    doc = drawGlyph(doc, 0x30, (bm) => { for (let y = 2; y < 8; y++) for (let x = 0; x < 4; x++) bm.set(x, y, 1); }).doc;
+    doc = drawGlyph(doc, 0x31, (bm) => { for (let y = 0; y < 8; y++) bm.set(1, y, 1); }).doc;
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, '01');
+    expect(v.metrics.zeroDisplayTopRow).toBe(1);
+    const one = v.glyphs.get(0x31)!;
+    expect(one.heightPx).toBe(8);
+    expect(one.displayTopRow).toBe(1);
+    expect(one.clippedBottom).toBe(true);
+    expect(one.rowsClippedBottom).toBe(1);
+    expect(one.clippedTop).toBe(false);
+    const check = v.checks.find((c) => c.name === 'No glyph clipped at the bottom')!;
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain("'1' (U+0031) (1 row)");
+    expect(check.detail).toContain("centres text on the ink of '0', LED rows 1–6");
+    // the last LED row shows the 7th ink row; the 8th is cut off
+    expect(one.bitmap).toHaveLength(8);
+    expect(one.bitmap![0].some(Boolean)).toBe(false);
+    expect(one.bitmap![7].some(Boolean)).toBe(true);
+    // and the slide animation (clipped to the rows of '0') crops it as well
+    expect(v.diagnosis.join('\n')).toMatch(/slide animation: '1' 2 rows below/);
   });
 });
 
@@ -509,5 +548,216 @@ describe('default settings', () => {
     expect(d.label).toBe('MAX7219 Georgian');
     expect(d.slug).toBe('georgian');
     expect(d.ttfFileName.endsWith('.ttf')).toBe(true);
+  });
+});
+
+/**
+ * The most common real-world font: digits 5 px wide drawn on the default
+ * 8-column grid of a new 8×8 font, so every glyph still advances the whole
+ * grid width.
+ */
+function wideGridClockFont(): FontDoc {
+  const EIGHT = ['.###.', '#...#', '#...#', '.###.', '#...#', '#...#', '#...#', '.###.'];
+  let doc = newTestFont(8, 8, 'WideGrid');
+  for (const d of '0123456789') {
+    doc = drawGlyph(doc, d.codePointAt(0)!, (bm) => {
+      EIGHT.forEach((row, i) => [...row].forEach((c, x) => { if (c === '#') bm.set(x, 7 - i, 1); }));
+    }).doc;
+  }
+  doc = drawGlyph(doc, 0x3a, (bm) => { bm.set(0, 2, 1); bm.set(0, 5, 1); }).doc;
+  return withOflLicense(doc);
+}
+
+describe('MAX7219 diagnosis', () => {
+  it('breaks the "88:88:88" width down into ink and blank advance and says how to fit', async () => {
+    const doc = wideGridClockFont();
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, '0123456789:');
+    expect(v.measuredTestStringWidthPx).toBe(64);
+    const check = v.checks.find((c) => c.name === '"88:88:88" advance width ≤ 48 px')!;
+    expect(check.ok).toBe(false);
+    expect(check.detail).toBe("64 px (need ≤ 48): '8' 8 px (5 ink + 3 blank) ×6, ':' 8 px (1 ink + 7 blank) ×2.");
+    const why = v.diagnosis.find((d) => d.startsWith('"88:88:88" is 64 px wide'))!;
+    expect(why).toContain("'8' advances 8 px for 5 px of ink");
+    expect(why).toContain('would be 40 px');
+    expect(why).toContain("make ':' advance 2 px and every digit at most 7 px");
+    // the editor hint names the setting and the target values
+    const hint = editorDiagnosis(doc, v).join('\n');
+    expect(hint).toContain("'8' is drawn on a 8-column grid with 5 inked columns and advances 1024 units = 8 grid columns");
+    expect(hint).toContain("'8' 768 units, ':' 256 units");
+    // the other checks are unaffected: the digits really are 8 px tall
+    expect(v.tallestDigitPx).toBe(8);
+    expect(v.checks.filter((c) => !c.ok).map((c) => c.name)).toEqual(['"88:88:88" advance width ≤ 48 px']);
+  });
+
+  it('points LED-matrix fonts at Resize pixel grid and letter spacing', async () => {
+    // digits drawn on 8-column grids, then turned into an 8×8 LED font:
+    // every glyph advances its grid width + 1 px of letter spacing = 9 px
+    let doc = newTestFont(8, 8, 'LedWide');
+    for (const d of '0123456789') {
+      doc = drawGlyph(doc, d.codePointAt(0)!, (bm) => { for (let y = 0; y < 8; y++) for (let x = 0; x < 5; x++) bm.set(x, y, 1); }).doc;
+    }
+    doc = drawGlyph(doc, 0x3a, (bm) => { bm.set(0, 2, 1); bm.set(0, 5, 1); }).doc;
+    doc = applyLedMatrix(doc, { ...defaultLedSpec(8, 8), descentRows: 2 });
+    expect(doc.glyphs.find((g) => g.unicode === 0x38)!.pixel!.width).toBe(8);
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, '0123456789:');
+    expect(v.measuredTestStringWidthPx).toBe(72);
+    const hint = editorDiagnosis(doc, v).join('\n');
+    expect(hint).toContain('every glyph advances its grid width + 1 px letter spacing');
+    expect(hint).toContain('Resize pixel grid…');
+    expect(hint).toContain('Letter spacing (px)');
+  });
+
+  it('places outlines where FreeType does (glyf xMin − lsb on the pen), not shifted by the lsb', async () => {
+    // A font written by a normal font tool: the glyf header carries the real
+    // bounding box and hmtx lsb = xMin. FreeType draws the outline at its own
+    // x (ink starts 2 px right of the pen); adding the lsb again would put it
+    // at 4 px.
+    let doc = newTestFont(8, 8, 'Origin');
+    doc = drawGlyph(doc, 0x30, (bm) => { for (let y = 0; y < 8; y++) for (let x = 2; x < 6; x++) bm.set(x, y, 1); }).doc;
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const font = Font.create(buffer, { type: 'ttf' });
+    const data = (font as unknown as { data: any }).data;
+    const g = data.glyf[data.cmap[0x30]];
+    const pts = g.contours.flat() as { x: number; y: number }[];
+    const xMin = Math.min(...pts.map((p) => p.x));
+    Object.assign(g, {
+      xMin,
+      xMax: Math.max(...pts.map((p) => p.x)),
+      yMin: Math.min(...pts.map((p) => p.y)),
+      yMax: Math.max(...pts.map((p) => p.y)),
+      leftSideBearing: xMin,
+    });
+    expect(xMin).toBe(256);
+    const v = validateMax7219Font(font.write({ type: 'ttf' }) as ArrayBuffer, '0');
+    const m = v.glyphs.get(0x30)!;
+    expect(m.inkLeftPx).toBe(2); // FreeType bitmap_left, verified with FreeType 2.13
+    expect(m.inkWidthPx).toBe(4);
+  });
+
+  it('warns when drawn pixels are not whole LEDs (5×7 grid: 1 pixel = 8/7 LED)', async () => {
+    let doc = newTestFont(5, 7, 'FiveBySeven');
+    for (const d of '0123456789') {
+      doc = drawGlyph(doc, d.codePointAt(0)!, (bm) => { for (let y = 0; y < 7; y++) for (let x = 0; x < 4; x++) if (y === 0 || y === 6 || x === 0 || x === 3) bm.set(x, y, 1); }).doc;
+    }
+    doc = drawGlyph(doc, 0x3a, (bm) => { bm.set(0, 1, 1); bm.set(0, 4, 1); }).doc;
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, '0123456789:');
+    expect(v.metrics.latticeFU).toBe(146);
+    expect(v.metrics.pxPerLatticeCell).toBeCloseTo(8 / 7, 3);
+    const warn = v.diagnosis.find((d) => d.startsWith("Drawn pixels don't land on whole LEDs"))!;
+    expect(warn).toContain('1 drawn pixel = 1.143 LED px');
+    expect(warn).toContain('the em is 7 drawn pixels tall, not 8');
+    expect(warn).toContain('unitsPerEm = 8 × 146 = 1168');
+  });
+
+  it('stays quiet about the scale when every drawn pixel is exactly one LED', async () => {
+    const doc = wideGridClockFont();
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, '0123456789:');
+    expect(v.metrics.latticeFU).toBe(128);
+    expect(v.metrics.pxPerLatticeCell).toBe(1);
+    expect(v.diagnosis.some((d) => d.includes("don't land on whole LEDs"))).toBe(false);
+  });
+
+  it('rounds the ascender up like FreeType (6.22 px → 7)', async () => {
+    const doc = newTestFont(8, 9, 'NineRows'); // 7 rows of 114 units above the baseline, em 1026
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, ' ');
+    expect(v.metrics.ascentFU).toBe(798);
+    expect(v.metrics.ascenderPx).toBe(7);
+    expect(v.metrics.descenderPx).toBe(-2);
+  });
+
+  it('reports a mapped but blank glyph as empty, not as missing from the cmap', async () => {
+    let doc = newTestFont(8, 8, 'BlankColon');
+    doc = drawGlyph(doc, 0x30, (bm) => { for (let y = 0; y < 8; y++) bm.set(1, y, 1); }).doc;
+    doc = drawGlyph(doc, 0x3a, () => {}).doc;
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, '0:');
+    expect(v.glyphs.get(0x3a)!.present).toBe(true);
+    expect(v.checks.find((c) => c.name === 'All glyphs present in cmap')?.ok).toBe(true);
+    const empty = v.checks.find((c) => c.name === 'No glyph renders as empty/.notdef')!;
+    expect(empty.ok).toBe(false);
+    expect(empty.detail).toContain("':' (U+003A)");
+  });
+
+  it('explains digits that render taller than drawn because their edges sit between LED rows', async () => {
+    // 16 grid rows on the em → 1 drawn pixel = ½ LED; 3 rows below the
+    // baseline put the bottom edge at −1.5 px, so 16 drawn rows (8 px) light 9 LED rows.
+    let doc = newTestFont(8, 16, 'HalfPixel', 3);
+    for (const d of '0123456789') {
+      doc = drawGlyph(doc, d.codePointAt(0)!, (bm) => { for (let y = 0; y < 16; y++) for (let x = 0; x < 6; x++) bm.set(x, y, 1); }).doc;
+    }
+    const { buffer } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    const v = validateMax7219Font(buffer, '0123456789');
+    expect(v.tallestDigitPx).toBe(9);
+    const why = v.diagnosis.find((d) => d.startsWith('The tallest digit renders 9 px'))!;
+    expect(why).toContain("'0' spans 1024 font units = 16 drawn pixels = 8 px");
+    expect(why).toContain('Its edges fall between LED rows (it spans y = -1.5 … 6.5 px around the baseline)');
+    expect(v.diagnosis.join('\n')).toContain("'0' itself is 9 px tall");
+  });
+
+  it('adds a Diagnosis section to EXPORT-REPORT.md when something is off', async () => {
+    const doc = wideGridClockFont();
+    const pkg = await buildMax7219Package(doc, settingsFor(doc, { glyphs: '0123456789:' }));
+    expect(pkg.validation.ok).toBe(false);
+    expect(pkg.reportContent).toContain('## Diagnosis');
+    expect(pkg.reportContent).toContain('"88:88:88" is 64 px wide');
+    expect(pkg.reportContent).toContain('| Char | Advance (px) | Ink width (px) | Height (px) | LED rows | Clipped top | Clipped bottom |');
+    expect(pkg.reportContent).toContain("| '8' (U+0038) | 8 | 5 | 8 | 0–7 | no | no |");
+  });
+});
+
+describe('MAX7219 debug log', () => {
+  it('is a compact, paste-friendly text with checks, causes, numbers and LED bitmaps', async () => {
+    const doc = wideGridClockFont();
+    const pkg = await buildMax7219Package(doc, settingsFor(doc, { glyphs: '0123456789:.-' }));
+    const log = buildMax7219DebugLog(doc, pkg, { appVersion: '1.2.3', commit: 'abc1234', now: new Date('2026-10-15T10:00:00Z') });
+    const lines = log.split('\n');
+    expect(lines[0]).toBe('===== Pixeel MAX7219 debug log =====');
+    expect(log).toContain('Pixeel v1.2.3 (build abc1234) · 2026-10-15T10:00:00.000Z');
+    // '.' and '-' are requested but not drawn: the cmap check fails too
+    expect(log).toContain('Result: FAIL — 2 of 7 checks failed');
+    expect(log).toContain("[FAIL] All glyphs present in cmap: Missing: '.' (U+002E), '-' (U+002D)");
+    expect(log).toContain("[FAIL] \"88:88:88\" advance width ≤ 48 px: 64 px (need ≤ 48): '8' 8 px (5 ink + 3 blank) ×6");
+    expect(log).toContain('--- Diagnosis ---');
+    expect(log).toContain("* '8' is drawn on a 8-column grid with 5 inked columns");
+    // editor and compiled-font facts
+    expect(log).toContain('created in Pixeel');
+    expect(log).toContain('LED matrix: off');
+    expect(log).toContain('Glyph-set grids: 8×8 cell 128 baseline row 2 (×11)');
+    expect(log).toContain('cell 128 units → em = 8 grid rows → 1 drawn pixel = 1 LED px at size 8');
+    expect(log).toContain('hinting: none (FreeType auto-hinter)');
+    expect(log).toContain('Outline pixel grid: 128 units = 1 LED px per drawn pixel (exact)');
+    expect(log).toContain("Clock placement: '0' ink is 8 px tall (bitmap_top 6) → centred on LED rows 0–7");
+    // per-glyph table, test-string breakdown and missing characters
+    expect(log).toMatch(/'8' \(U\+0038\)\s+8×8 @128 b2\s+5×8\s+1024→8\s+0,-256\.\.640,768\s+5×8\s+0\s+0–7\s+-/);
+    expect(log).toMatch(/'\.' \(U\+002E\)\s+missing\s+-\s+-\s+not in the TTF/);
+    expect(log).toContain("'8' × 6: 8 px (5 ink + 3 blank) each = 48 px");
+    expect(log).toContain('Total 64 px · with every glyph advancing ink + 1 px it would be 40 px');
+    // LED rows as the clock shows them, and the drawing they come from
+    expect(log).toContain('--- 8 px on the clock');
+    expect(log).toMatch(/^0 {3}\.###\.\.\.\. {2}/m);
+    expect(log).toMatch(/^\+6 {2}\.###\.\.\.\. {2}/m);
+    expect(log).toMatch(/^-2 {2}\.###\.\.\.\. {2}/m);
+    expect(lines[lines.length - 1]).toBe('===== end of MAX7219 debug log =====');
+    // no raw JSON dumps; short enough to paste
+    expect(log).not.toMatch(/[{}]/);
+    expect(lines.length).toBeLessThan(150);
+  });
+
+  it('lists failing glyphs outside the clock characters and summarises the rest', async () => {
+    let doc = newTestFont(8, 8, 'Letters');
+    for (const d of '0123456789') doc = drawGlyph(doc, d.codePointAt(0)!, (bm) => { for (let y = 0; y < 8; y++) bm.set(1, y, 1); }).doc;
+    doc = drawGlyph(doc, 0x3a, (bm) => { bm.set(0, 2, 1); bm.set(0, 5, 1); }).doc;
+    doc = drawGlyph(doc, 0x41, (bm) => { for (let y = 0; y < 8; y++) bm.set(1, y, 1); }).doc; // 'A' fine
+    doc = withOflLicense(doc);
+    const pkg = await buildMax7219Package(doc, settingsFor(doc, { glyphs: '0123456789:AB' }));
+    const log = buildMax7219DebugLog(doc, pkg);
+    expect(log).toMatch(/'B' \(U\+0042\)\s+missing/);
+    expect(log).not.toMatch(/'A' \(U\+0041\)\s+8×8/);
+    expect(log).toContain('(1 other character measured without problems)');
   });
 });
