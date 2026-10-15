@@ -4,8 +4,9 @@ import { Box, Paper, Tab, Tabs } from '@mui/material';
 import { useStore } from '../state/store';
 import type { Slot } from '../core/types';
 import { MetricsPanel, PreviewPanel, ComparePanel } from './SidePanels';
+import { CoveragePanel } from './CoveragePanel';
 
-type PanelTab = 'metrics' | 'preview' | 'compare';
+type PanelTab = 'metrics' | 'sets' | 'preview' | 'compare';
 
 export function SidePanel(props: { slot: Slot }) {
   const { slot } = props;
@@ -37,6 +38,7 @@ export function SidePanel(props: { slot: Slot }) {
         sx={{ borderBottom: 1, borderColor: 'divider', minHeight: 44 }}
       >
         <Tab value="metrics" label="Metrics" id="side-tab-metrics" aria-controls="side-panel-metrics" />
+        <Tab value="sets" label="Sets" id="side-tab-sets" aria-controls="side-panel-sets" title="Character coverage and the large-digit workflow" />
         <Tab value="preview" label="Preview" id="side-tab-preview" aria-controls="side-panel-preview" />
         <Tab
           value="compare"
@@ -53,6 +55,7 @@ export function SidePanel(props: { slot: Slot }) {
         sx={{ flex: 1, minHeight: 0, overflow: 'auto', p: 1.5 }}
       >
         {tab === 'metrics' && <MetricsPanel slot={slot} />}
+        {tab === 'sets' && <CoveragePanel slot={slot} />}
         {tab === 'preview' && <PreviewPanel slot={slot} />}
         {tab === 'compare' && <ComparePanel />}
       </Box>

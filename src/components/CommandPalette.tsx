@@ -24,6 +24,7 @@ import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import LightbulbOutlinedIcon from '@mui/icons-material/LightbulbOutlined';
 import GridOnIcon from '@mui/icons-material/GridOn';
+import TuneIcon from '@mui/icons-material/Tune';
 import AddIcon from '@mui/icons-material/Add';
 import DesignServicesIcon from '@mui/icons-material/DesignServices';
 import CodeIcon from '@mui/icons-material/Code';
@@ -194,6 +195,24 @@ export function useCommands(): Command[] {
         group: 'Glyph',
         disabled: !hasGlyph || glyph?.name === '.notdef',
         action: () => hasGlyph && openModal({ type: 'unicodeMappings', slot: active, glyphId: ui.glyphId! }),
+      },
+      {
+        id: 'character-sets',
+        label: 'Character coverage & sets…',
+        keywords: ['coverage', 'character', 'sets', 'missing', 'georgian', 'georgia', 'english', 'latin', 'digits', 'large', 'add', 'unicodes', 'complete'],
+        icon: <TuneIcon />,
+        group: 'Font',
+        disabled: !hasDoc,
+        action: () => hasDoc && openModal({ type: 'characterSets', slot: active }),
+      },
+      {
+        id: 'large-digits',
+        label: 'Double-size large digits…',
+        keywords: ['large', 'digits', 'double', 'size', 'alternative', 'pua', 'e000', 'numbers', 'times'],
+        icon: <TuneIcon />,
+        group: 'Font',
+        disabled: !hasDoc,
+        action: () => hasDoc && openModal({ type: 'characterSets', slot: active, focus: 'largeDigits' }),
       },
       {
         id: 'vertical-metrics',

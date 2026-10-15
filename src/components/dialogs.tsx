@@ -67,6 +67,7 @@ import { GlyphDesignerDialog } from './GlyphDesigner';
 import { KerningDialog } from './KerningDialog';
 import { VerticalMetricsDialog } from './VerticalMetricsDialog';
 import { UnicodeMappingsDialog } from './UnicodeMappingsDialog';
+import { CharacterSetsDialog } from './CharacterSetsDialog';
 
 /** Numeric field that keeps a number (NaN when empty) and reports it. */
 function NumberField(props: {
@@ -1989,6 +1990,7 @@ const SHORTCUTS: Array<[string, string, string?]> = [
   ['Ctrl+S', 'Save the project file', 'File'],
   ['Ctrl+K', 'Open command palette — fuzzy search commands, jump to glyph by character or U+ code', 'Navigation'],
   ['Ctrl/Cmd + K then type', 'In palette, type a command name or a glyph (A, U+10D0) and press Enter to jump', 'Navigation'],
+  ['Ctrl/Cmd + K → “Character coverage”', 'Open the coverage report / Add Character Sets dialog (also: Font menu, the Sets tab of the side panel, or the Sets button above the glyph grid)', 'Character sets'],
 ];
 
 export function HelpDialog() {
@@ -2062,6 +2064,46 @@ export function HelpDialog() {
           <li>Vector glyphs are rasterized (snapped) to the grid.</li>
         </ul>
       </Section>
+      <Section title="Character sets & coverage">
+        <ul style={{ margin: 0, paddingLeft: 18 }}>
+          <li>
+            Import any font (TTF/OTF/WOFF/WOFF2/BDF) and the coverage report tells you, per set, how many characters are <em>present</em>, still <em>blank</em> and <em>missing</em>:
+            English upper/lower case, the 33 modern Georgian Mkhedruli letters (U+10D0–U+10F0), the standard digits, the double-size alternative digits and common punctuation.
+          </li>
+          <li>
+            A character only counts as <em>present</em> when its glyph really has artwork — a code point that maps to <code>.notdef</code>, to an empty glyph or to an all-dark grid is
+            reported as missing/blank. A space (U+0020) with an advance width is the one exception: there is nothing to draw.
+          </li>
+          <li>
+            <em>Add Character Sets…</em> adds the missing characters of one or several sets in a single step: existing glyphs are kept as they are by default, the new ones start as blank
+            pixel grids marked “blank / newly added” until you draw them, and one <kbd>Ctrl+Z</kbd> undoes the whole batch. Options: <em>Fill blanks</em>, <em>Overwrite</em> (explicit),
+            a template copy (e.g. from the matching standard digit) and a ×2 nearest-neighbour scale.
+          </li>
+          <li>
+            Click any card of the <em>Missing Glyphs</em> tab (or a missing character inside a set tab) to add exactly that one character. Blank characters in the browser are dashed
+            orange and open for drawing instead of being re-created.
+          </li>
+        </ul>
+      </Section>
+      <Section title="Double-size (alternative) digits">
+        <ul style={{ margin: 0, paddingLeft: 18 }}>
+          <li>
+            The large digits are ten ordinary characters with their own glyphs, mapped to a configurable range — by default the Private Use Area U+E000–U+E009. They never replace the
+            standard digits, so a text can mix both sizes.
+          </li>
+          <li>
+            Workflow: <em>Add the large-digit set</em> → <em>Copy</em> a standard digit into its large counterpart → <em>×2</em> if you want it double-size → draw and adjust metrics
+            independently. Every step is one undo step and uses nearest-neighbour sampling (never smoothing).
+          </li>
+          <li>
+            Changing the mapping <em>moves</em> the existing glyphs to the new code points (artwork, advance widths and names stay) instead of recreating them. A code point that already
+            belongs to another character is refused with an explanation — nothing is stolen silently, and a broken mapping in an old project file falls back to the default.
+          </li>
+          <li>
+            Insert the large digits into a preview from the <em>Sets</em> side tab (<em>Large digits</em> → insert into the preview text) or use the Preview panel's digit comparison.
+          </li>
+        </ul>
+      </Section>
       <Section title="Glyph designer and Georgian letters">
         <ul style={{ margin: 0, paddingLeft: 18 }}>
           <li>Open a pixel glyph and choose <em>Glyph designer…</em> to sample a character from a local reference font. Width, height, stroke weight, slant and vertical position are adjustable before the bitmap is placed into the selected glyph.</li>
@@ -2129,6 +2171,8 @@ export function ModalHost() {
       return <VerticalMetricsDialog key={modal.slot} slot={modal.slot} />;
     case 'kerning':
       return <KerningDialog key={`${modal.slot}:${modal.left ?? ''}:${modal.right ?? ''}`} slot={modal.slot} left={modal.left} right={modal.right} />;
+    case 'characterSets':
+      return <CharacterSetsDialog key={`${modal.slot}:${modal.focus ?? 'coverage'}`} slot={modal.slot} focus={modal.focus} />;
     case 'help':
       return <HelpDialog />;
     default:

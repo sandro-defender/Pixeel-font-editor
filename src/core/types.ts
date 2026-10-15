@@ -40,6 +40,14 @@ export interface PixelData {
 
 export type GlyphKind = 'pixel' | 'vector' | 'compound' | 'empty';
 
+/**
+ * Where a glyph came from. `imported` = read from the source font,
+ * `added` = created by "Add Character Sets" (so the UI can tell newly added
+ * characters from the ones that were already in the file). Absent for glyphs
+ * drawn in a font created in Pixeel.
+ */
+export type GlyphOrigin = 'imported' | 'added';
+
 export type SymmetryMode = 'none' | 'horizontal' | 'vertical' | 'quad' | 'radial';
 
 export interface GlyphDoc {
@@ -71,6 +79,8 @@ export interface GlyphDoc {
   srcIndex: number | null;
   /** Symmetry mode for pixel editing, persisted per glyph. */
   symmetry?: SymmetryMode;
+  /** How the glyph entered the document (see GlyphOrigin). */
+  origin?: GlyphOrigin;
 }
 
 /** A kerning pair (by glyph id): `value` font units are added after the left glyph. */
@@ -150,6 +160,18 @@ export interface LedMatrixSpec {
   descentRows: number;
 }
 
+/**
+ * Code points of the *double-size alternative digits*. They are ordinary
+ * characters of the font (they live in the Private Use Area by default,
+ * U+E000–U+E009) but they map to their own glyphs, so a text can use the
+ * regular and the large digits side by side. Configurable per font; changing
+ * the mapping moves the existing glyphs instead of recreating them.
+ */
+export interface AltDigitMapping {
+  /** Exactly 10 code points, digit 0 first. */
+  codepoints: number[];
+}
+
 export interface FontDoc {
   /** Stable id of the font instance (used to key preserved source data). */
   fontId: string;
@@ -165,6 +187,12 @@ export interface FontDoc {
   sourceRef: string | null;
   /** Present (non-null) when the font is an LED matrix / exact-pixel font. */
   ledMatrix?: LedMatrixSpec | null;
+  /**
+   * Alternative (double-size) digit mapping. Optional: older project files and
+   * freshly imported fonts fall back to U+E000–U+E009, so nothing has to be
+   * migrated and no existing data is touched.
+   */
+  altDigits?: AltDigitMapping | null;
   /**
    * The design that was mapped onto the LED matrix, remembered when LED mode
    * is turned on. Glyphs re-snapped later (a reverted outline, a pasted glyph)

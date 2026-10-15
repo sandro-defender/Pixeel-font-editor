@@ -68,3 +68,28 @@ export function mappingConflicts(doc: Pick<FontDoc, 'glyphs'>, glyphId: string, 
 }
 
 export const formatCp = (cp: number): string => 'U+' + cp.toString(16).toUpperCase().padStart(4, '0');
+
+export interface DuplicateMapping {
+  codePoint: number;
+  owners: Array<{ id: string; name: string }>;
+}
+
+/**
+ * Code points claimed by more than one glyph. The editor never creates these
+ * (assigning a taken code point fails with a conflict), but a hand-edited
+ * project file can, and a duplicate cannot be written to a cmap — so it is
+ * detected explicitly instead of surfacing as a writer error.
+ */
+export function duplicateMappings(doc: Pick<FontDoc, 'glyphs'>): DuplicateMapping[] {
+  const owners = new Map<number, Array<{ id: string; name: string }>>();
+  for (const g of doc.glyphs) {
+    for (const cp of allUnicodes(g)) {
+      const list = owners.get(cp) ?? [];
+      list.push({ id: g.id, name: g.name });
+      owners.set(cp, list);
+    }
+  }
+  const out: DuplicateMapping[] = [];
+  for (const [codePoint, list] of owners) if (list.length > 1) out.push({ codePoint, owners: list });
+  return out.sort((a, b) => a.codePoint - b.codePoint);
+}

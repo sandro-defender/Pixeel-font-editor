@@ -17,6 +17,7 @@ import HelpOutlineIcon from '@mui/icons-material/Help';
 import GridOnIcon from '@mui/icons-material/GridOn';
 import SearchIcon from '@mui/icons-material/Search';
 import SpaceBarIcon from '@mui/icons-material/SpaceBar';
+import TranslateIcon from '@mui/icons-material/Translate';
 import FormatLineSpacingIcon from '@mui/icons-material/FormatLineSpacing';
 import { useStore, workspaceName } from '../state/store';
 import type { Slot } from '../core/types';
@@ -183,6 +184,14 @@ export function TopBar(props: { onOpenPalette?: () => void }) {
             <MenuItem key="led" disabled={!doc} onClick={() => { close(); openModal({ type: 'ledMatrix', slot: active }); }}>
               <ListItemIcon><LightbulbOutlinedIcon fontSize="small" /></ListItemIcon>
               <ListItemText primary={doc?.ledMatrix ? 'LED matrix (on)…' : 'LED matrix…'} secondary="Exact-pixel mode" />
+            </MenuItem>,
+            <MenuItem key="charsets" disabled={!doc} onClick={() => { close(); openModal({ type: 'characterSets', slot: active }); }}>
+              <ListItemIcon><TranslateIcon fontSize="small" /></ListItemIcon>
+              <ListItemText primary="Character coverage & sets…" secondary="Add missing English, Georgian, digits, large digits" />
+            </MenuItem>,
+            <MenuItem key="largedigits" disabled={!doc} onClick={() => { close(); openModal({ type: 'characterSets', slot: active, focus: 'largeDigits' }); }}>
+              <ListItemIcon><TranslateIcon fontSize="small" /></ListItemIcon>
+              <ListItemText primary="Double-size large digits…" secondary="Mapping, copy & scale workflow" />
             </MenuItem>,
             <MenuItem key="vmetrics" disabled={!doc} onClick={() => { close(); openModal({ type: 'verticalMetrics', slot: active }); }}>
               <ListItemIcon><FormatLineSpacingIcon fontSize="small" /></ListItemIcon>

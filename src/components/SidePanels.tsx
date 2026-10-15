@@ -2,7 +2,7 @@
 import { glyphForCodePoint, mappingCount } from '../core/unicodeMap';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTheme } from '@mui/material/styles';
-import { Alert, Box, Button, Checkbox, Chip, FormControlLabel, Paper, Slider, Stack, TextField, Typography } from '@mui/material';
+import { Alert, Box, Button, Checkbox, Chip, FormControlLabel, Paper, Slider, Stack, TextField, Tooltip, Typography } from '@mui/material';
 import { useStore } from '../state/store';
 import type { FontDoc, GlyphDoc, Slot } from '../core/types';
 import { parseCodePointInput, describeCodePoint, SAMPLE_TEXTS } from '../core/unicodeNames';
@@ -12,6 +12,9 @@ import { assignUnicode, duplicateGlyph, removeGlyphs, renameGlyph, setAdvance, s
 import { Hint, Section } from './ui';
 import { computeRSB, glyphBoxWidth } from '../core/metrics';
 import { kernedRuns, kerningOf } from '../core/kerning';
+import { glyphHasArtwork, largeDigitPoints } from '../core/charSets';
+import { allUnicodes, formatCp } from '../core/unicodeMap';
+import { charFromCodePoint } from '../core/unicodeNames';
 
 /** Whole-number font units; rejects blank and fractional input. */
 function parseUnits(text: string): number | null {
@@ -353,6 +356,7 @@ export function PreviewPanel(props: { slot: Slot }) {
               )
             : text || 'Type something…'}
         </Paper>
+        <DigitComparison slot={slot} family={family} size={size} onInsert={(text) => setText((t) => `${t}${text}`)} />
         <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }} useFlexGap>
           <FormControlLabel
             control={<Checkbox size="small" checked={highlightKerning} onChange={(e) => setHighlightKerning(e.target.checked)} />}
@@ -467,5 +471,104 @@ function CompareCell(props: {
         </Button>
       )}
     </Paper>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Regular vs. large digits
+// ---------------------------------------------------------------------------
+
+const REGULAR_DIGITS = '0123456789';
+
+/**
+ * Live comparison of the standard digits and the double-size alternative digits
+ * of the *current* font, plus a clickable picker for the Private Use Area code
+ * points (they have no universal keyboard, so previewing them needs a button).
+ * Ordinary digits are never replaced by the large ones.
+ */
+export function DigitComparison(props: {
+  slot: Slot;
+  family: string | null;
+  size: number;
+  onInsert: (text: string) => void;
+}) {
+  const { slot, family, size } = props;
+  const doc = useStore((s) => s.fonts[slot]);
+  const openModal = useStore((s) => s.openModal);
+  const setListCategory = useStore((s) => s.setListCategory);
+  const selectGlyph = useStore((s) => s.selectGlyph);
+  if (!doc) return null;
+
+  const altPoints = largeDigitPoints(doc);
+  const largeChars = altPoints.map((cp) => charFromCodePoint(cp)).join('');
+  const largeGlyphs = altPoints.map((cp) => doc.glyphs.find((g) => allUnicodes(g).includes(cp)));
+  const ready = largeGlyphs.filter((g) => g && glyphHasArtwork(g)).length;
+  const style = {
+    fontFamily: family ? `"${family}"` : 'serif',
+    fontSize: size,
+    lineHeight: 1.2,
+    whiteSpace: 'pre-wrap' as const,
+    wordBreak: 'break-all' as const,
+  };
+
+  return (
+    <Section title="Regular vs. large digits">
+      <Box aria-label="Regular digits preview" data-testid="digit-preview-regular" sx={style}>
+        {REGULAR_DIGITS}
+      </Box>
+      <Box
+        aria-label="Large digits preview"
+        data-testid="digit-preview-large"
+        sx={{ ...style, opacity: ready ? 1 : 0.35, borderTop: 1, borderColor: 'divider', pt: 0.5 }}
+      >
+        {ready ? largeChars : '••••••••••'}
+      </Box>
+      <Typography variant="caption" color="text.secondary">
+        {ready === 10
+          ? `All 10 large digits are drawn (${formatCp(altPoints[0])}–${formatCp(altPoints[9])}).`
+          : `${ready}/10 large digits drawn — mapping ${formatCp(altPoints[0])}–${formatCp(altPoints[9])}.`}
+      </Typography>
+      <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap' }} useFlexGap aria-label="Insert a large digit into the preview text">
+        {altPoints.map((cp, i) => {
+          const glyph = largeGlyphs[i];
+          const drawn = !!glyph && glyphHasArtwork(glyph);
+          return (
+            <Tooltip
+              key={cp}
+              title={`${formatCp(cp)}${glyph ? ` — ${glyph.name}` : ' — not added yet'}${drawn ? '' : ' (blank)'} · click to append to the preview text`}
+            >
+              <Chip
+                size="small"
+                clickable
+                color={drawn ? 'primary' : 'default'}
+                variant={drawn ? 'filled' : 'outlined'}
+                label={charFromCodePoint(cp)}
+                aria-label={`Insert large digit ${i} ${formatCp(cp)}`}
+                onClick={() => props.onInsert(charFromCodePoint(cp))}
+                onDoubleClick={() => {
+                  if (glyph) {
+                    selectGlyph(slot, glyph.id);
+                    setListCategory(slot, 'largeDigits');
+                  }
+                }}
+                sx={{ fontSize: 16, height: 26, minWidth: 30 }}
+              />
+            </Tooltip>
+          );
+        })}
+      </Stack>
+      <Stack direction="row" spacing={1} sx={{ flexWrap: 'wrap' }} useFlexGap>
+        <Button size="small" onClick={() => props.onInsert(largeChars)} disabled={ready === 0} title="Append all ten large digits to the preview text">
+          Insert all large digits
+        </Button>
+        <Button size="small" onClick={() => props.onInsert(`${REGULAR_DIGITS}  ${largeChars}`)} disabled={ready === 0}>
+          Insert both rows
+        </Button>
+        <Button size="small" onClick={() => openModal({ type: 'characterSets', slot, focus: 'largeDigits' })}>
+          Large digit sets…
+        </Button>
+      </Stack>
+      <Hint>Large digits are ordinary characters of the font (Private Use Area by default); normal text keeps using the standard digits.</Hint>
+    </Section>
   );
 }
