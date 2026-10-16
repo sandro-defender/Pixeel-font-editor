@@ -31,6 +31,8 @@ import { allUnicodes, duplicateMappings } from './unicodeMap';
 import { analyzeCoverage, coverageSummaryLine, type CoverageReport } from './coverage';
 import { pointsForSet } from './charSets';
 import { unwrapFont } from './woff';
+import { readUnicodeCmap, unicodeCmapRecord } from './cmapRead';
+import { finalizeSfnt } from './sfntFinalize';
 import { buildKernTable, effectivePairs, kerningFromTtf, kerningOf, kerningToIndexPairs, parseKernTable } from './kerning';
 
 export interface TtfLike {
@@ -118,11 +120,14 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
   const srcGlyf = (ttf.glyf ?? []) as Array<Record<string, any>>;
   const glyphs: GlyphDoc[] = [];
   let extraCount = 0;
+  // The code points of each glyph come from the Unicode subtables of the raw
+  // cmap; fonteditor's own lists also take legacy Mac Roman codes as Unicode.
+  const unicodeOf = readUnicodeCmap(buffer).byGlyph;
 
   // First pass: create docs so compound references can be resolved by index.
   for (let i = 0; i < srcGlyf.length; i++) {
     const g = srcGlyf[i];
-    const unicodes: number[] = Array.isArray(g.unicode) ? g.unicode : g.unicode != null ? [g.unicode] : [];
+    const unicodes: number[] = unicodeOf.get(i) ?? [];
     const unicode = unicodes.length ? unicodes[0] : null;
     const extraUnicodes = [...new Set(unicodes.slice(1))].filter((cp) => cp !== unicode);
     if (extraUnicodes.length) extraCount += extraUnicodes.length;
@@ -665,7 +670,13 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   const raw = font.write({ type: 'ttf', ...writerOptions }) as unknown as ArrayBuffer | Uint8Array;
   // fonteditor-core returns a Node Buffer in Node environments — normalize to a
   // standalone ArrayBuffer (handles pooled buffers with a byteOffset).
-  const buffer = toStandaloneBuffer(raw);
+  // Then the writer's post names and Mac cmap are corrected (see sfntFinalize).
+  const glyphOfCp = new Map<number, number>();
+  doc.glyphs.forEach((g, i) => allUnicodes(g).forEach((cp) => { if (!glyphOfCp.has(cp)) glyphOfCp.set(cp, i); }));
+  const buffer = finalizeSfnt(toStandaloneBuffer(raw), {
+    glyphNames: newGlyf.map((r) => String(r.name)),
+    glyphOfCodePoint: (cp) => glyphOfCp.get(cp) ?? 0,
+  });
 
   const srcTables = doc.source?.tables ?? [];
   const preserved = srcTables.filter((t) =>
@@ -726,7 +737,7 @@ export interface ReopenedFont {
 export function reopenFont(buffer: ArrayBuffer): ReopenedFont {
   const font = Font.create(buffer, { type: 'ttf', hinting: true, kerning: true }) as unknown as FontInstance;
   const ttf = font.data as unknown as TtfLike;
-  const cmap = (ttf.cmap ?? {}) as unknown as Record<number, number>;
+  const cmap = unicodeCmapRecord(buffer);
   const glyphAt = (cp: number): Record<string, any> | null => {
     const idx = cmap[cp];
     if (idx === undefined || idx === null) return null;
@@ -804,7 +815,7 @@ export function validateExport(buffer: ArrayBuffer, doc: FontDoc, expectedKernPa
     push('Glyph count', ttf.glyf.length === doc.glyphs.length, `expected ${doc.glyphs.length}, got ${ttf.glyf.length}`);
     push('unitsPerEm', (ttf.head as any).unitsPerEm === doc.metrics.unitsPerEm, `expected ${doc.metrics.unitsPerEm}, got ${(ttf.head as any).unitsPerEm}`);
 
-    const cmap = (ttf.cmap ?? {}) as Record<string, number>;
+    const cmap = unicodeCmapRecord(buffer) as Record<string, number>;
     const mapped = doc.glyphs.filter((g) => g.unicode !== null);
     const sample = mapped.slice(0, 200);
     let bad = 0;
