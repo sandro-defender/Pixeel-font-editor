@@ -33,6 +33,7 @@ import { pointsForSet } from './charSets';
 import { unwrapFont } from './woff';
 import { codePointsByGlyph, readCmapFromSfnt } from './cmapRead';
 import { finalizeSfnt } from './sfntFinalize';
+import { rangeWords, unicodeRangeBits, wordBits } from './os2Ranges';
 import { buildKernTable, effectivePairs, kerningFromTtf, kerningOf, kerningToIndexPairs, parseKernTable } from './kerning';
 
 export interface TtfLike {
@@ -170,6 +171,9 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
     const g = srcGlyf[i];
     const parsed: number[] = Array.isArray(g.unicode) ? g.unicode : g.unicode != null ? [g.unicode] : [];
     const unicodes: number[] = cmapByGlyph ? (cmapByGlyph.get(i) ?? []) : parsed;
+    // keep the parsed source consistent with what the file really maps: it is
+    // kept for export (boxes, kerning) and must not carry the Mac Roman codes
+    if (cmapByGlyph) g.unicode = unicodes.length ? [...unicodes] : undefined;
     const unicode = unicodes.length ? unicodes[0] : null;
     const extraUnicodes = [...new Set(unicodes.slice(1))].filter((cp) => cp !== unicode);
     if (extraUnicodes.length) extraCount += extraUnicodes.length;
@@ -559,6 +563,43 @@ function applyGlyfBounds(records: Array<Record<string, any>>, glyphs: GlyphDoc[]
   };
 }
 
+/** Every code point a document maps, primary and extra. */
+export function documentCodePoints(doc: FontDoc): Set<number> {
+  const out = new Set<number>();
+  for (const g of doc.glyphs) for (const cp of allUnicodes(g)) out.add(cp);
+  return out;
+}
+
+/** Code points a parsed source font maps (its glyf records carry the lists). */
+function sourceCodePoints(sourceTtf: TtfLike | null): Set<number> {
+  const out = new Set<number>();
+  for (const rec of (sourceTtf?.glyf ?? []) as Array<Record<string, any>>) {
+    const u = rec?.unicode;
+    if (Array.isArray(u)) for (const cp of u) out.add(Number(cp));
+    else if (typeof u === 'number') out.add(u);
+  }
+  return out;
+}
+
+/**
+ * The OS/2 ulUnicodeRange1-4 words an export should carry.
+ *
+ * A font created in Pixeel gets the blocks of its own characters, computed
+ * like fontTools' `intersectUnicodeRanges`. An imported font keeps the words
+ * its designer chose and only gains bits for blocks whose characters were
+ * added in Pixeel — a font may deliberately claim (or not claim) a block it
+ * only partly covers, and an export must not quietly change that.
+ */
+export function exportUnicodeRanges(doc: FontDoc, sourceTtf: TtfLike | null): [number, number, number, number] {
+  const docPoints = documentCodePoints(doc);
+  const os2 = (sourceTtf?.['OS/2'] ?? null) as Record<string, unknown> | null;
+  if (!os2) return rangeWords(unicodeRangeBits(docPoints));
+  const sourceWords = [1, 2, 3, 4].map((i) => Number(os2[`ulUnicodeRange${i}`] ?? 0) >>> 0);
+  const sourcePoints = sourceCodePoints(sourceTtf);
+  const added = [...docPoints].filter((cp) => !sourcePoints.has(cp));
+  return rangeWords(new Set([...wordBits(sourceWords), ...unicodeRangeBits(added)]));
+}
+
 /** Build the TTF binary plus a report describing what was preserved/dropped. */
 export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: ExportReport } {
   const { doc, options } = input;
@@ -678,6 +719,13 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
     }
   }
 
+  // --- OS/2 ulUnicodeRange1-4
+  // fonteditor-core's OS/2 writer sets ulUnicodeRange2 to 268435456 (only the
+  // "Private Use Area" bit) in every font it writes, throwing away the real
+  // coverage bits, and its `support` hook cannot override OS/2. The correct
+  // words are computed here and written by the finalize pass.
+  const unicodeRanges = exportUnicodeRanges(doc, input.sourceTtf);
+
   // Name table: overlay editable fields; unknown/imported extra records survive.
   const names: Record<string, string> = { ...((base.name as Record<string, string>) ?? {}) };
   const m = doc.meta;
@@ -722,6 +770,7 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   // names in post, Mac Roman codes in cmap) and recomputes the checksums.
   const buffer = finalizeSfnt(toStandaloneBuffer(raw), {
     glyphNames: doc.glyphs.map((g, i) => g.name || `glyph${i}`),
+    unicodeRanges,
   });
 
   const srcTables = doc.source?.tables ?? [];

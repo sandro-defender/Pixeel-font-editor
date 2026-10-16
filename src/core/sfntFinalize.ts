@@ -14,6 +14,9 @@
  *  - the legacy Macintosh `(1,0)` format-0 subtable of `cmap`, which fonteditor
  *    fills with Unicode values below 256 instead of Mac Roman byte codes (so
  *    code 0xB2 pointed at `twosuperior` where Mac Roman means `lessequal`).
+ *  - `OS/2` ulUnicodeRange1-4: its writer sets ulUnicodeRange2 to 268435456
+ *    ("Private Use Area" only) in every font, dropping the real coverage bits
+ *    (Lato 1342237951 → 268435456), and its `support` hook cannot reach OS/2.
  */
 import { readCmapFromSfnt } from './cmapRead';
 import { MAC_ROMAN_TO_UNICODE, STANDARD_MAC_GLYPH_INDEX } from './macEncoding';
@@ -32,6 +35,29 @@ export interface FinalizeOptions {
    * table; fonts whose post table has no names (format 3) are left alone.
    */
   glyphNames?: readonly string[];
+  /** OS/2 ulUnicodeRange1-4 (see core/os2Ranges.ts). */
+  unicodeRanges?: readonly [number, number, number, number];
+}
+
+/** Field offsets inside the OS/2 table (every version has them). */
+const OS2_OFFSET = {
+  xAvgCharWidth: 2,
+  ulUnicodeRange1: 42,
+  ulUnicodeRange2: 46,
+  ulUnicodeRange3: 50,
+  ulUnicodeRange4: 54,
+} as const;
+
+/** Write the four Unicode range words; null when the table is too short. */
+export function patchOs2UnicodeRanges(os2: Uint8Array, words: readonly number[]): Uint8Array | null {
+  if (os2.length < OS2_OFFSET.ulUnicodeRange4 + 4) return null;
+  const out = new Uint8Array(os2);
+  const view = new DataView(out.buffer);
+  view.setUint32(OS2_OFFSET.ulUnicodeRange1, (words[0] ?? 0) >>> 0);
+  view.setUint32(OS2_OFFSET.ulUnicodeRange2, (words[1] ?? 0) >>> 0);
+  view.setUint32(OS2_OFFSET.ulUnicodeRange3, (words[2] ?? 0) >>> 0);
+  view.setUint32(OS2_OFFSET.ulUnicodeRange4, (words[3] ?? 0) >>> 0);
+  return out;
 }
 
 /** Printable ASCII, without the characters PostScript names may not contain. */
@@ -142,6 +168,15 @@ export function finalizeSfnt(buffer: ArrayBuffer | Uint8Array, options: Finalize
         tables = withTable(tables, 'post', rebuilt);
         changed = true;
       }
+    }
+  }
+
+  const os2 = tables.find((t) => t.tag === 'OS/2');
+  if (os2 && options.unicodeRanges) {
+    const patched = patchOs2UnicodeRanges(os2.data, options.unicodeRanges);
+    if (patched && patched.some((b, i) => b !== os2.data[i])) {
+      tables = withTable(tables, 'OS/2', patched);
+      changed = true;
     }
   }
 
