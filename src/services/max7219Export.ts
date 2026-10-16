@@ -16,6 +16,7 @@ import { buildLicenseTxt } from '../core/license';
 import { downloadBlob } from './persistence';
 import { exportFont } from './exportService';
 import { DEFAULT_EXPORT_OPTIONS, listTables } from '../core/fontCodec';
+import { unicodeCmapRecord } from '../core/cmapRead';
 import { makePostScriptName } from '../core/metadata';
 import { rasterizeCoverage, coverageToBitmap } from '../core/rasterize';
 import { MAX_GRID } from '../core/bitmap';
@@ -385,7 +386,8 @@ function measureCompiledTtf(ttfBuffer: ArrayBuffer, glyphSet: string): {
   }
   const hasHinting = tables.includes('fpgm') || tables.includes('prep') || Number(ttf.maxp?.maxSizeOfInstructions ?? 0) > 0;
 
-  const cmap: Record<string, number> = ttf.cmap ?? {};
+  // Unicode subtables only: fonteditor's merged map also reads legacy Mac codes as Unicode
+  const cmap: Record<string, number> = unicodeCmapRecord(ttfBuffer);
   const glyf: any[] = ttf.glyf ?? [];
   const inks = new Map<number, Ink>();
   const measurements = new Map<number, GlyphMeasurement>();
