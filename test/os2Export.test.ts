@@ -12,6 +12,7 @@ import { resolve } from 'node:path';
 import { buildTtf, exportUnicodeRanges, importFont } from '../src/core/fontCodec';
 import { rangeWords, unicodeRangeBits, wordBits } from '../src/core/os2Ranges';
 import { readSfnt } from '../src/core/sfnt';
+import { advanceWidths, averageCharWidth } from '../src/core/sfntFinalize';
 import { drawGlyph, newTestFont } from './helpers';
 import { suggestGlyphName } from '../src/core/unicodeNames';
 import { makeId, type FontDoc, type GlyphDoc } from '../src/core/types';
@@ -118,5 +119,61 @@ describe('OS/2 Unicode ranges', () => {
     };
     const { buffer } = buildTtf({ doc: trimmed, sourceTtf, options: exportOptions });
     expect(exportedRanges(buffer)).toEqual(sourceRanges(fixture('Quantico-Bold.ttf')));
+  });
+});
+
+/**
+ * OS/2 version 3 and later define xAvgCharWidth as the average over the
+ * glyphs that have a non-zero advance width. fonteditor-core divided the sum
+ * of every advance by the number of glyphs, so Lato exported 1009 where the
+ * original (and fontTools' recalcAvgCharWidth) says 1108.
+ */
+describe('OS/2 xAvgCharWidth', () => {
+  const avgOf = (buffer: ArrayBuffer): number => {
+    const os2 = readSfnt(buffer).tables.find((t) => t.tag === 'OS/2')!;
+    return new DataView(os2.data.buffer, os2.data.byteOffset, os2.data.byteLength).getInt16(2);
+  };
+
+  it('averages the non-zero advance widths only', () => {
+    expect(averageCharWidth([500, 500, 0, 0])).toBe(500);
+    expect(averageCharWidth([0, 0])).toBe(0);
+    expect(averageCharWidth([1, 2])).toBe(2); // rounds like fontTools otRound (1.5 → 2)
+    expect(averageCharWidth([])).toBe(0);
+  });
+
+  it('reads the advance widths of a real font from hhea/hmtx/maxp', () => {
+    const tables = readSfnt(fixture('Quantico-Bold.ttf')).tables;
+    const widths = advanceWidths(tables);
+    expect(widths.length).toBe(268);
+    expect(widths.filter((w) => w === 0).length).toBe(1); // only .null has no advance
+    expect(averageCharWidth(widths)).toBe(589);
+  });
+
+  it('exports Lato with 1108, the value its designer stored', async () => {
+    const { doc, sourceTtf } = await importFont(fixture('Lato-Regular.ttf'), 'Lato-Regular.ttf');
+    const { buffer } = buildTtf({ doc, sourceTtf, options: exportOptions });
+    expect(avgOf(buffer)).toBe(1108); // was 1009: 269 zero-width glyphs dragged it down
+    expect(averageCharWidth(advanceWidths(readSfnt(buffer).tables))).toBe(1108);
+  });
+
+  it('exports Quantico with the version 3+ definition of the average', async () => {
+    const { doc, sourceTtf } = await importFont(fixture('Quantico-Bold.ttf'), 'Quantico-Bold.ttf');
+    const { buffer } = buildTtf({ doc, sourceTtf, options: exportOptions });
+    expect(avgOf(buffer)).toBe(589);
+  });
+
+  it('ignores a zero-width glyph of a font made in Pixeel', () => {
+    let doc: FontDoc = newTestFont(8, 8, 'ZeroWidth');
+    doc = drawGlyph(doc, 0x41, (bm) => bm.rect(1, 1, 6, 6, 1, true)).doc;
+    doc = drawGlyph(doc, 0x42, (bm) => bm.rect(1, 1, 6, 6, 1, true)).doc;
+    const widths = doc.glyphs.map((g) => Math.round(g.advanceWidth));
+    const zeroed: FontDoc = {
+      ...doc,
+      glyphs: doc.glyphs.map((g) => (g.unicode === 0x42 ? { ...g, advanceWidth: 0 } : g)),
+    };
+    const { buffer } = buildTtf({ doc: zeroed, sourceTtf: null, options: exportOptions });
+    const expected = averageCharWidth(widths.map((w, i) => (zeroed.glyphs[i].unicode === 0x42 ? 0 : w)));
+    expect(avgOf(buffer)).toBe(expected);
+    expect(avgOf(buffer)).toBe(averageCharWidth(advanceWidths(readSfnt(buffer).tables)));
   });
 });

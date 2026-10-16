@@ -17,10 +17,13 @@
  *  - `OS/2` ulUnicodeRange1-4: its writer sets ulUnicodeRange2 to 268435456
  *    ("Private Use Area" only) in every font, dropping the real coverage bits
  *    (Lato 1342237951 → 268435456), and its `support` hook cannot reach OS/2.
+ *  - `OS/2` xAvgCharWidth: averaged over every glyph including the zero-width
+ *    ones, while OS/2 version 3 and later average the non-zero-width glyphs
+ *    only (Lato 1009 instead of 1108, DotMatrix 44 instead of 47).
  */
 import { readCmapFromSfnt } from './cmapRead';
 import { MAC_ROMAN_TO_UNICODE, STANDARD_MAC_GLYPH_INDEX } from './macEncoding';
-import { bytesOf, readSfnt, withTable, writeSfnt, type SfntTable } from './sfnt';
+import { bytesOf, readSfnt, viewOf, withTable, writeSfnt, type SfntTable } from './sfnt';
 
 /** A standalone ArrayBuffer holding exactly these bytes. */
 function toArrayBuffer(input: ArrayBuffer | Uint8Array): ArrayBuffer {
@@ -47,6 +50,52 @@ const OS2_OFFSET = {
   ulUnicodeRange3: 50,
   ulUnicodeRange4: 54,
 } as const;
+
+/**
+ * Every glyph's advance width, from the file's own hhea/hmtx/maxp tables.
+ * The last entry of hmtx repeats for the monospaced tail of the font.
+ */
+export function advanceWidths(tables: readonly SfntTable[]): number[] {
+  const get = (tag: string) => tables.find((t) => t.tag === tag);
+  const maxp = get('maxp');
+  const hhea = get('hhea');
+  const hmtx = get('hmtx');
+  if (!maxp || !hhea || !hmtx || maxp.data.length < 6 || hhea.data.length < 36) return [];
+  const numGlyphs = viewOf(maxp.data).getUint16(4);
+  const numberOfHMetrics = viewOf(hhea.data).getUint16(34);
+  const view = viewOf(hmtx.data);
+  const widths: number[] = [];
+  let last = 0;
+  for (let i = 0; i < numGlyphs; i++) {
+    if (i < numberOfHMetrics) {
+      const at = i * 4;
+      if (at + 2 > hmtx.data.length) break;
+      last = view.getUint16(at);
+    }
+    widths.push(last);
+  }
+  return widths;
+}
+
+/**
+ * OS/2 version 3+ defines xAvgCharWidth as the arithmetic average of the
+ * advance widths of the glyphs that have one — zero-width glyphs (marks,
+ * .null, composed accents) are excluded. Same rounding as fontTools'
+ * recalcAvgCharWidth.
+ */
+export function averageCharWidth(widths: readonly number[]): number {
+  const inked = widths.filter((w) => w > 0);
+  if (!inked.length) return 0;
+  return Math.floor(inked.reduce((sum, w) => sum + w, 0) / inked.length + 0.5);
+}
+
+/** Write xAvgCharWidth; null when the table is too short. */
+export function patchOs2AvgCharWidth(os2: Uint8Array, value: number): Uint8Array | null {
+  if (os2.length < OS2_OFFSET.xAvgCharWidth + 2) return null;
+  const out = new Uint8Array(os2);
+  new DataView(out.buffer).setInt16(OS2_OFFSET.xAvgCharWidth, Math.max(-32768, Math.min(32767, value)));
+  return out;
+}
 
 /** Write the four Unicode range words; null when the table is too short. */
 export function patchOs2UnicodeRanges(os2: Uint8Array, words: readonly number[]): Uint8Array | null {
@@ -172,10 +221,13 @@ export function finalizeSfnt(buffer: ArrayBuffer | Uint8Array, options: Finalize
   }
 
   const os2 = tables.find((t) => t.tag === 'OS/2');
-  if (os2 && options.unicodeRanges) {
-    const patched = patchOs2UnicodeRanges(os2.data, options.unicodeRanges);
-    if (patched && patched.some((b, i) => b !== os2.data[i])) {
-      tables = withTable(tables, 'OS/2', patched);
+  if (os2) {
+    let data = os2.data;
+    if (options.unicodeRanges) data = patchOs2UnicodeRanges(data, options.unicodeRanges) ?? data;
+    const avg = averageCharWidth(advanceWidths(tables));
+    data = patchOs2AvgCharWidth(data, avg) ?? data;
+    if (data.some((b, i) => b !== os2.data[i])) {
+      tables = withTable(tables, 'OS/2', data);
       changed = true;
     }
   }
