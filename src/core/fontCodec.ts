@@ -649,7 +649,9 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
 
   const writerOptions = {
     hinting: options.preserveHinting,
-    kerning: options.preserveKerning,
+    // fonteditor-core's `hinting` already copies GPOS/kern/kerx when they are
+    // present; asking for `kerning` as well would write those tags twice.
+    kerning: options.preserveKerning && !options.preserveHinting,
     writeZeroContoursGlyfData: false,
     // fonteditor-core derives the head box from the glyf boxes, but its hhea
     // extents assume lsb = xMin and count empty glyphs; with no outline at all
@@ -776,6 +778,25 @@ export function verifyExportedCoverage(buffer: ArrayBuffer, doc: FontDoc): Expor
 export function validateExport(buffer: ArrayBuffer, doc: FontDoc, expectedKernPairs?: number): ValidationResult {
   const checks: ValidationCheck[] = [];
   const push = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
+  // The table directory itself: every tag once, in ascending order (OTS rejects
+  // a font whose directory is not sorted, and FreeType ignores the duplicate).
+  let tags: string[] = [];
+  try {
+    tags = listTables(buffer);
+  } catch (err) {
+    push('Table directory', false, `Cannot read the table directory: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (tags.length) {
+    const dupes = [...new Set(tags.filter((t, i) => tags.indexOf(t) !== i))];
+    const unsorted = tags.some((t, i) => i > 0 && tags[i - 1] >= t);
+    push(
+      'Table directory',
+      dupes.length === 0 && !unsorted,
+      dupes.length || unsorted
+        ? `${dupes.length ? `duplicate tag(s): ${dupes.map((t) => `“${t}”`).join(', ')}` : ''}${dupes.length && unsorted ? '; ' : ''}${unsorted ? 'tags are not in ascending order' : ''}.`
+        : `${tags.length} tables, each listed once in ascending order (${tags.join(', ')}).`,
+    );
+  }
   try {
     const font = Font.create(buffer, { type: 'ttf', kerning: expectedKernPairs !== undefined }) as unknown as FontInstance;
     const ttf = font.data as unknown as TtfLike;
