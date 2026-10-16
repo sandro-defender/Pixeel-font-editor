@@ -11,8 +11,3 @@
   licensed under the BSD 2-Clause license; see Spleen-LICENSE.txt. A genuine
   bitmap font used to verify pixel-font detection and lossless conversion
   against data that did not come out of Pixeel.
-- `Quantico-Bold.ttf` — Quantico Bold by Matthew Desmond (copyright 2011), from
-  the Esphome-Max7219-Matrix-Clock repository (`fonts/quantico/`). Licensed under
-  the SIL Open Font License 1.1 (see Quantico-OFL.txt). It has a legacy Mac Roman
-  cmap subtable next to its Unicode ones: used to prove the importer does not
-  read Mac codes as Unicode.
