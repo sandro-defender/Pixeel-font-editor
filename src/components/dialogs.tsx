@@ -57,6 +57,7 @@ import {
   validateSlug,
   type Max7219ExportSettings,
 } from '../services/max7219Export';
+import { buildMax7219DebugLog, editorDiagnosis } from '../services/max7219DebugLog';
 import { releaseSourcesNotIn } from '../services/fileActions';
 import { findConflicts, sourceAfterMove, transferGlyphs, type CollisionStrategy, type MetricsMode } from '../core/transfer';
 import { detectFontPixelGrid, gridForRows, pixelizeFont, placeOnGrid, type PixelizeReport } from '../core/pixelGrid';
@@ -769,7 +770,7 @@ export function ExportDialog(props: { slot: Slot }) {
       const pkg = await buildMax7219Package(doc, m7219);
       if (mounted.current) {
         setM7219Preview(pkg);
-        setM7219Log(pkg.reportContent + '\n\n## Raw measurements\n' + JSON.stringify([...pkg.validation.glyphs.values()], null, 2));
+        setM7219Log(buildMax7219DebugLog(doc, pkg, { appVersion: __APP_VERSION__, commit: __APP_COMMIT__ }));
       }
     } catch (err) {
       if (mounted.current) {
@@ -800,7 +801,7 @@ export function ExportDialog(props: { slot: Slot }) {
         const pkg = await buildMax7219Package(doc, m7219);
         if (mounted.current) {
           setM7219Preview(pkg);
-          setM7219Log(pkg.reportContent + '\n\n## Raw measurements\n' + JSON.stringify([...pkg.validation.glyphs.values()], null, 2));
+          setM7219Log(buildMax7219DebugLog(doc, pkg, { appVersion: __APP_VERSION__, commit: __APP_COMMIT__ }));
           downloadBlob(pkg.blob, pkg.fileName);
           toast(pkg.validation.ok ? 'success' : 'warning', pkg.validation.ok
             ? `MAX7219 package downloaded: ${pkg.fileName} (all checks passed).`
@@ -1071,16 +1072,19 @@ export function ExportDialog(props: { slot: Slot }) {
           </Box>
           {m7219Log && (
             <Box sx={{ mt: 2 }}>
-              <Typography variant="subtitle2">Full validation log</Typography>
+              <Typography variant="subtitle2">Debug log</Typography>
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                Everything the validator measured — editor grids, compiled-font metrics, per-glyph numbers and the 8&thinsp;px LED bitmaps. Paste it when asking for help with a failing check.
+              </Typography>
               <Stack direction="row" spacing={1} sx={{ my: 1 }}>
                 <Button onClick={async () => {
-                  try { await navigator.clipboard.writeText(m7219Log); toast('success', 'Full validation log copied.'); }
+                  try { await navigator.clipboard.writeText(m7219Log); toast('success', 'Debug log copied.'); }
                   catch { toast('warning', 'Clipboard unavailable — select the log text below and copy it manually.'); }
-                }}>Copy full log</Button>
-                <Button onClick={() => downloadBlob(new Blob([m7219Log], { type: 'text/plain;charset=utf-8' }), 'MAX7219-validation-log.txt')}>Download log</Button>
+                }}>Copy debug log</Button>
+                <Button onClick={() => downloadBlob(new Blob([m7219Log], { type: 'text/plain;charset=utf-8' }), 'MAX7219-debug-log.txt')}>Download debug log</Button>
               </Stack>
-              <TextField fullWidth multiline minRows={8} maxRows={20} label="Complete validation log"
-                value={m7219Log} slotProps={{ input: { readOnly: true } }} />
+              <TextField fullWidth multiline minRows={8} maxRows={20} label="MAX7219 debug log"
+                value={m7219Log} slotProps={{ input: { readOnly: true, sx: { fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 12, whiteSpace: 'pre' } } }} />
             </Box>
           )}
           {m7219Error && <Alert severity="error" sx={{ mt: 2 }}>{m7219Error}</Alert>}
@@ -1106,6 +1110,17 @@ export function ExportDialog(props: { slot: Slot }) {
                   ))}
                 </TableBody>
               </Table>
+              {(() => {
+                const notes = [...m7219Preview.validation.diagnosis, ...editorDiagnosis(doc, m7219Preview.validation)];
+                return notes.length > 0 && (
+                  <Alert severity={m7219Preview.validation.ok ? 'info' : 'warning'} sx={{ mt: 1 }}>
+                    <strong>{m7219Preview.validation.ok ? 'Notes' : 'Why it fails and how to fix it'}</strong>
+                    <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+                      {notes.map((n) => <li key={n}>{n}</li>)}
+                    </Box>
+                  </Alert>
+                );
+              })()}
               {m7219Preview.validation.ok ? (
                 <Alert severity="success">All mandatory checks passed. The ZIP is ready for submission.</Alert>
               ) : (

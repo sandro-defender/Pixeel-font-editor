@@ -383,6 +383,135 @@ export function resolveGlyphContours(glyph: GlyphDoc, all: GlyphDoc[]): Contour[
   return glyph.contours;
 }
 
+/** Integer bounding box of a glyph outline, in font units (the glyf header fields). */
+export interface GlyfBox {
+  xMin: number;
+  yMin: number;
+  xMax: number;
+  yMax: number;
+}
+
+/** A component's 2×2 matrix is stored as F2Dot14 — the precision it really has in the file. */
+const toF2Dot14 = (v: number): number => Math.round(v * 16384) / 16384;
+
+/**
+ * Outline bounds of glyf records (the writer's input, or a re-parsed font):
+ * simple glyphs from all their points, on- and off-curve — the TrueType
+ * definition — and composites from their components' points through the stored
+ * transform (offsets as written, 2×2 part at F2Dot14 precision), rounded once
+ * at the end like fontTools does. null for a glyph without an outline.
+ */
+export function glyfRecordBounds(records: ReadonlyArray<Record<string, any> | null | undefined>): Array<GlyfBox | null> {
+  const memo = new Map<number, number[]>(); // flattened points: x0, y0, x1, y1, …
+  const flatten = (i: number, stack: Set<number>): number[] => {
+    const known = memo.get(i);
+    if (known) return known;
+    const rec = records[i];
+    const out: number[] = [];
+    if (rec?.compound && Array.isArray(rec.glyfs)) {
+      if (stack.has(i)) return out; // component cycle: contributes nothing
+      stack.add(i);
+      for (const comp of rec.glyfs) {
+        const t = comp?.transform ?? {};
+        const a = toF2Dot14(t.a ?? 1), b = toF2Dot14(t.b ?? 0), c = toF2Dot14(t.c ?? 0), d = toF2Dot14(t.d ?? 1);
+        const e = Number(t.e ?? 0), f = Number(t.f ?? 0);
+        const pts = typeof comp?.glyphIndex === 'number' ? flatten(comp.glyphIndex, stack) : [];
+        for (let k = 0; k < pts.length; k += 2) out.push(a * pts[k] + c * pts[k + 1] + e, b * pts[k] + d * pts[k + 1] + f);
+      }
+      stack.delete(i);
+    } else if (rec && Array.isArray(rec.contours)) {
+      for (const contour of rec.contours) for (const p of contour) out.push(Number(p.x), Number(p.y));
+    }
+    memo.set(i, out);
+    return out;
+  };
+  return records.map((_, i) => {
+    const pts = flatten(i, new Set());
+    if (!pts.length) return null;
+    let xMin = Infinity, yMin = Infinity, xMax = -Infinity, yMax = -Infinity;
+    for (let k = 0; k < pts.length; k += 2) {
+      const x = pts[k], y = pts[k + 1];
+      if (x < xMin) xMin = x;
+      if (x > xMax) xMax = x;
+      if (y < yMin) yMin = y;
+      if (y > yMax) yMax = y;
+    }
+    return { xMin: Math.round(xMin), yMin: Math.round(yMin), xMax: Math.round(xMax), yMax: Math.round(yMax) };
+  });
+}
+
+/** The glyf header box a parsed record carries, or null when it has none. */
+function storedBox(rec: Record<string, any> | null | undefined): GlyfBox | null {
+  if (!rec) return null;
+  const v = [rec.xMin, rec.yMin, rec.xMax, rec.yMax];
+  if (!v.every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  return { xMin: v[0], yMin: v[1], xMax: v[2], yMax: v[3] };
+}
+
+/** Within a font unit on every side: font compilers round scaled composites differently. */
+function boxesAgree(a: GlyfBox, b: GlyfBox): boolean {
+  return Math.abs(a.xMin - b.xMin) <= 1 && Math.abs(a.yMin - b.yMin) <= 1 && Math.abs(a.xMax - b.xMax) <= 1 && Math.abs(a.yMax - b.yMax) <= 1;
+}
+
+/** hhea's horizontal extents, over the glyphs that have an outline (the OpenType definition). */
+export interface HorizontalExtents {
+  minLeftSideBearing: number;
+  minRightSideBearing: number;
+  xMaxExtent: number;
+}
+
+/**
+ * Give every glyph record its glyf-header bounding box and hmtx left side
+ * bearing. FreeType — Linux, Android, ESPHome, Pillow… — puts a glyph's
+ * outline at x − (header xMin − lsb), and OTS, the sanitizer Chrome and Firefox
+ * run on every web font, rejects a font whose head bbox is inverted; both have
+ * to describe the outline that is really written:
+ * - a glyph Pixeel draws (pixel glyphs) or the user created or changed gets the
+ *   box of its written points and lsb = xMin, so it renders exactly where the
+ *   editor shows it;
+ * - an untouched imported glyph whose source header matches its outline keeps
+ *   the source's box and lsb, so FreeType renders it exactly like the original
+ *   font — including fonts whose lsb deliberately differs from xMin, and
+ *   hinting that measures from the phantom points;
+ * - an untouched glyph whose source header did not match (e.g. an old export
+ *   with a 0,0,0,0 box) gets its real box and lsb = xMin;
+ * - a glyph without an outline gets no box (it has no glyf entry and must not
+ *   stretch the font box) and lsb 0, unless it is an untouched import.
+ */
+function applyGlyfBounds(records: Array<Record<string, any>>, glyphs: GlyphDoc[], sourceTtf: TtfLike | null): { inked: number; extents: HorizontalExtents } {
+  const boxes = glyfRecordBounds(records);
+  const srcGlyf = (sourceTtf?.glyf ?? []) as Array<Record<string, any>>;
+  let inked = 0;
+  let minLeft = Infinity, minRight = Infinity, maxExtent = -Infinity;
+  records.forEach((rec, i) => {
+    const g = glyphs[i];
+    const untouched = !!g && !g.edited && g.origin !== 'added' && typeof g.srcIndex === 'number' && g.kind !== 'pixel';
+    const box = boxes[i];
+    if (!box) {
+      if (!untouched) rec.leftSideBearing = 0;
+      return;
+    }
+    const source = untouched ? storedBox(srcGlyf[g.srcIndex!]) : null;
+    if (source && boxesAgree(source, box)) {
+      Object.assign(rec, source); // and the source's lsb, already on the record
+    } else {
+      Object.assign(rec, box);
+      rec.leftSideBearing = box.xMin;
+    }
+    inked += 1;
+    const extent = rec.leftSideBearing + (rec.xMax - rec.xMin);
+    minLeft = Math.min(minLeft, rec.leftSideBearing);
+    minRight = Math.min(minRight, rec.advanceWidth - extent);
+    maxExtent = Math.max(maxExtent, extent);
+  });
+  return {
+    inked,
+    extents: inked
+      ? { minLeftSideBearing: minLeft, minRightSideBearing: minRight, xMaxExtent: maxExtent }
+      : { minLeftSideBearing: 0, minRightSideBearing: 0, xMaxExtent: 0 },
+  };
+}
+
 /** Build the TTF binary plus a report describing what was preserved/dropped. */
 export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: ExportReport } {
   const { doc, options } = input;
@@ -443,6 +572,9 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   if (droppedInstructions > 0) {
     notes.push(`TrueType instructions were dropped for ${droppedInstructions} edited glyph(s) — they no longer match the new point layout.`);
   }
+
+  // Real glyf boxes and side bearings; the writer derives the head box from them.
+  const bounds = applyGlyfBounds(newGlyf, doc.glyphs, input.sourceTtf);
   if (!options.preserveHinting && doc.source?.hasHinting) {
     notes.push('Hinting tables (cvt/fpgm/prep/gasp) and glyph instructions were not preserved (option off).');
   }
@@ -519,6 +651,13 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
     hinting: options.preserveHinting,
     kerning: options.preserveKerning,
     writeZeroContoursGlyfData: false,
+    // fonteditor-core derives the head box from the glyf boxes, but its hhea
+    // extents assume lsb = xMin and count empty glyphs; with no outline at all
+    // it would leave the head box inverted (16384…-16384), which OTS rejects.
+    support: {
+      hhea: bounds.extents,
+      ...(bounds.inked ? {} : { head: { xMin: 0, yMin: 0, xMax: 0, yMax: 0 } }),
+    },
   };
   const font = Font.create().set(base as never);
   const raw = font.write({ type: 'ttf', ...writerOptions }) as unknown as ArrayBuffer | Uint8Array;
@@ -692,6 +831,50 @@ export function validateExport(buffer: ArrayBuffer, doc: FontDoc, expectedKernPa
         problems.length
           ? `${verified}/${touched.length} verified. ${problems.slice(0, 3).join('; ')}${problems.length > 3 ? '; …' : ''}`
           : `All ${touched.length} glyph(s) added or edited in Pixeel are in the file with their outlines and advance widths.`,
+      );
+    }
+
+    // --- glyph boxes: FreeType places every glyph by its glyf box and lsb, and
+    //     browsers (OTS) reject a font whose head box does not hold together.
+    {
+      const parsed = ttf.glyf as Array<Record<string, any>>;
+      const real = glyfRecordBounds(parsed);
+      const problems: string[] = [];
+      let inked = 0;
+      let union: GlyfBox | null = null;
+      parsed.forEach((rg, i) => {
+        const box = real[i];
+        if (!box) return;
+        inked += 1;
+        const label = `“${doc.glyphs[i]?.name ?? rg.name ?? i}”`;
+        const stored = storedBox(rg);
+        if (!stored || !boxesAgree(stored, box)) {
+          const fmt = (b: GlyfBox) => `${b.xMin},${b.yMin}…${b.xMax},${b.yMax}`;
+          problems.push(`${label} box ${stored ? fmt(stored) : 'missing'} ≠ outline ${fmt(box)}`);
+          return;
+        }
+        union = union
+          ? { xMin: Math.min(union.xMin, stored.xMin), yMin: Math.min(union.yMin, stored.yMin), xMax: Math.max(union.xMax, stored.xMax), yMax: Math.max(union.yMax, stored.yMax) }
+          : stored;
+        const g = doc.glyphs[i];
+        const drawnHere = !!g && (g.edited || g.origin === 'added' || g.kind === 'pixel' || typeof g.srcIndex !== 'number');
+        const lsb = Math.round(Number(rg.leftSideBearing ?? NaN));
+        if (drawnHere && lsb !== stored.xMin) problems.push(`${label} lsb ${lsb} ≠ xMin ${stored.xMin} (FreeType would draw it ${lsb - stored.xMin} units off)`);
+      });
+      const h = ttf.head as unknown as Record<string, number>;
+      const headBox: GlyfBox = { xMin: h.xMin, yMin: h.yMin, xMax: h.xMax, yMax: h.yMax };
+      const expectedHead: GlyfBox = union ?? { xMin: 0, yMin: 0, xMax: 0, yMax: 0 };
+      const headOk = (['xMin', 'yMin', 'xMax', 'yMax'] as const).every((k) => headBox[k] === expectedHead[k]);
+      if (!headOk) {
+        problems.push(`font box (head) ${headBox.xMin},${headBox.yMin}…${headBox.xMax},${headBox.yMax} ≠ ${expectedHead.xMin},${expectedHead.yMin}…${expectedHead.xMax},${expectedHead.yMax}`);
+      }
+      push(
+        'Glyph boxes & side bearings',
+        problems.length === 0,
+        problems.length
+          ? `${problems.length} problem(s): ${problems.slice(0, 3).join('; ')}${problems.length > 3 ? '; …' : ''}`
+          : `${inked} outlined glyph(s) carry their real bounding box; font box ${headBox.xMin},${headBox.yMin}…${headBox.xMax},${headBox.yMax}. ` +
+              'Glyphs drawn or edited in Pixeel start at their outline (lsb = xMin), so FreeType-based renderers such as ESPHome draw them where the editor shows them.',
       );
     }
 
