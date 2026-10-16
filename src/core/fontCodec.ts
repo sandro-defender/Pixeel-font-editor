@@ -77,6 +77,34 @@ export function listTables(buffer: ArrayBuffer): string[] {
   return tables;
 }
 
+/**
+ * The sfnt table directory must list every tag exactly once, sorted ascending
+ * by tag (OpenType spec; OTS — the sanitizer Chrome and Firefox run on every
+ * web font — reports "Table directory is not correctly ordered" otherwise, and
+ * a duplicate entry means the same bytes are stored twice).
+ */
+export function checkTableDirectory(buffer: ArrayBuffer): { ok: boolean; detail: string; tags: string[] } {
+  let tags: string[];
+  try {
+    tags = listTables(buffer);
+  } catch (err) {
+    return { ok: false, tags: [], detail: `Table directory could not be read: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const counts = new Map<string, number>();
+  for (const t of tags) counts.set(t, (counts.get(t) ?? 0) + 1);
+  const problems: string[] = [];
+  const duplicates = [...counts].filter(([, n]) => n > 1).map(([t, n]) => `${t.trim()} ×${n}`);
+  if (duplicates.length) problems.push(`written more than once: ${duplicates.join(', ')}`);
+  const sorted = [...tags].sort();
+  if (tags.some((t, i) => t !== sorted[i])) problems.push('tags are not in ascending order');
+  const list = tags.map((t) => t.trim()).join(', ');
+  return {
+    ok: problems.length === 0,
+    tags,
+    detail: problems.length ? `${problems.join('; ')} (${list}).` : `${tags.length} table(s), each once and in ascending order: ${list}.`,
+  };
+}
+
 export interface ImportResult {
   doc: FontDoc;
   sourceTtf: TtfLike;
@@ -649,7 +677,15 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
 
   const writerOptions = {
     hinting: options.preserveHinting,
-    kerning: options.preserveKerning,
+    // fonteditor-core's writer builds its table list from two overlapping sets:
+    // `hinting` copies cvt/fpgm/prep/gasp *and* GPOS/kern/kerx, `kerning` copies
+    // GPOS/kern/kerx again (ttfwriter.js prepareDump). Asking for both wrote
+    // every kerning table twice — a duplicate tag in the sfnt directory, which
+    // breaks its ascending order (OTS: "Table directory is not correctly
+    // ordered") and doubled the data (+210 KB on Lato). The `kerning` flag is
+    // therefore only needed when `hinting` is off; kerning is still dropped by
+    // deleting GPOS/kern/kerx from `base` above when preserveKerning is false.
+    kerning: options.preserveKerning && !options.preserveHinting,
     writeZeroContoursGlyfData: false,
     // fonteditor-core derives the head box from the glyf boxes, but its hhea
     // extents assume lsb = xMin and count empty glyphs; with no outline at all
@@ -776,6 +812,8 @@ export function verifyExportedCoverage(buffer: ArrayBuffer, doc: FontDoc): Expor
 export function validateExport(buffer: ArrayBuffer, doc: FontDoc, expectedKernPairs?: number): ValidationResult {
   const checks: ValidationCheck[] = [];
   const push = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
+  const dir = checkTableDirectory(buffer);
+  push('Table directory', dir.ok, dir.detail);
   try {
     const font = Font.create(buffer, { type: 'ttf', kerning: expectedKernPairs !== undefined }) as unknown as FontInstance;
     const ttf = font.data as unknown as TtfLike;
