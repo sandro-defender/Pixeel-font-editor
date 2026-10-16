@@ -74,11 +74,25 @@ export function patchMacRomanSubtable(cmap: Uint8Array, glyphOfCodePoint: (cp: n
   return cmap;
 }
 
+/**
+ * OS/2 fields fonteditor-core gets wrong: it sets ulUnicodeRange2 to the Private
+ * Use bit for every font.
+ */
+export function patchOs2(os2: Uint8Array, values: { unicodeRanges: readonly number[] }): Uint8Array {
+  if (os2.byteLength < 58) return os2; // version 0 is 78 bytes, but anything shorter has no ranges
+  const out = os2.slice();
+  const v = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  values.unicodeRanges.forEach((word, i) => v.setUint32(42 + i * 4, word >>> 0));
+  return out;
+}
+
 export interface FinalizeInput {
   /** Glyph names in glyph order (the names the editor holds). */
   glyphNames: string[];
   /** Code point → glyph index for the written font (Unicode mappings only). */
   glyphOfCodePoint: (cp: number) => number;
+  /** OS/2 values the writer gets wrong (see patchOs2). */
+  os2: { unicodeRanges: readonly number[] };
 }
 
 /** Apply every correction to a written sfnt and return the new bytes. */
@@ -87,6 +101,7 @@ export function finalizeSfnt(buffer: ArrayBuffer, input: FinalizeInput): ArrayBu
   const tables: SfntTable[] = file.tables.map((t) => {
     if (t.tag === 'post') return { tag: t.tag, data: rewritePostNames(t.data, input.glyphNames) };
     if (t.tag === 'cmap') return { tag: t.tag, data: patchMacRomanSubtable(t.data, input.glyphOfCodePoint) };
+    if (t.tag === 'OS/2') return { tag: t.tag, data: patchOs2(t.data, input.os2) };
     return t;
   });
   return writeSfnt({ sfntVersion: file.sfntVersion, tables });

@@ -33,6 +33,7 @@ import { pointsForSet } from './charSets';
 import { unwrapFont } from './woff';
 import { readUnicodeCmap, unicodeCmapRecord } from './cmapRead';
 import { finalizeSfnt } from './sfntFinalize';
+import { computeUnicodeRanges, type UnicodeRanges } from './os2Ranges';
 import { buildKernTable, effectivePairs, kerningFromTtf, kerningOf, kerningToIndexPairs, parseKernTable } from './kerning';
 
 export interface TtfLike {
@@ -538,6 +539,10 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   // Start from the original parsed font when available so that GPOS/kern/
   // hinting/name extras survive; otherwise use the blank template.
   const base: TtfLike = input.sourceTtf ? structuredClone(input.sourceTtf) : emptyTtfObject();
+  // an imported font keeps its own Unicode ranges; a new font has none beyond its characters
+  const sourceRanges: UnicodeRanges | null = input.sourceTtf
+    ? [1, 2, 3, 4].map((n) => Number(input.sourceTtf!['OS/2']?.[`ulUnicodeRange${n}`] ?? 0) >>> 0)
+    : null;
 
   const idToIndex = new Map<string, number>();
   doc.glyphs.forEach((g, i) => idToIndex.set(g.id, i));
@@ -676,6 +681,7 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   const buffer = finalizeSfnt(toStandaloneBuffer(raw), {
     glyphNames: newGlyf.map((r) => String(r.name)),
     glyphOfCodePoint: (cp) => glyphOfCp.get(cp) ?? 0,
+    os2: { unicodeRanges: computeUnicodeRanges(glyphOfCp.keys(), sourceRanges) },
   });
 
   const srcTables = doc.source?.tables ?? [];
