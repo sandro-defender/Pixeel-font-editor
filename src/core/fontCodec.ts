@@ -31,6 +31,9 @@ import { allUnicodes, duplicateMappings } from './unicodeMap';
 import { analyzeCoverage, coverageSummaryLine, type CoverageReport } from './coverage';
 import { pointsForSet } from './charSets';
 import { unwrapFont } from './woff';
+import { codePointsByGlyph, readCmapFromSfnt } from './cmapRead';
+import { finalizeSfnt } from './sfntFinalize';
+import { rangeWords, unicodeRangeBits, wordBits } from './os2Ranges';
 import { buildKernTable, effectivePairs, kerningFromTtf, kerningOf, kerningToIndexPairs, parseKernTable } from './kerning';
 
 export interface TtfLike {
@@ -77,6 +80,34 @@ export function listTables(buffer: ArrayBuffer): string[] {
   return tables;
 }
 
+/**
+ * The sfnt table directory must list every tag exactly once, sorted ascending
+ * by tag (OpenType spec; OTS — the sanitizer Chrome and Firefox run on every
+ * web font — reports "Table directory is not correctly ordered" otherwise, and
+ * a duplicate entry means the same bytes are stored twice).
+ */
+export function checkTableDirectory(buffer: ArrayBuffer): { ok: boolean; detail: string; tags: string[] } {
+  let tags: string[];
+  try {
+    tags = listTables(buffer);
+  } catch (err) {
+    return { ok: false, tags: [], detail: `Table directory could not be read: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const counts = new Map<string, number>();
+  for (const t of tags) counts.set(t, (counts.get(t) ?? 0) + 1);
+  const problems: string[] = [];
+  const duplicates = [...counts].filter(([, n]) => n > 1).map(([t, n]) => `${t.trim()} ×${n}`);
+  if (duplicates.length) problems.push(`written more than once: ${duplicates.join(', ')}`);
+  const sorted = [...tags].sort();
+  if (tags.some((t, i) => t !== sorted[i])) problems.push('tags are not in ascending order');
+  const list = tags.map((t) => t.trim()).join(', ');
+  return {
+    ok: problems.length === 0,
+    tags,
+    detail: problems.length ? `${problems.join('; ')} (${list}).` : `${tags.length} table(s), each once and in ascending order: ${list}.`,
+  };
+}
+
 export interface ImportResult {
   doc: FontDoc;
   sourceTtf: TtfLike;
@@ -119,10 +150,30 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
   const glyphs: GlyphDoc[] = [];
   let extraCount = 0;
 
+  // Code points come from the Unicode cmap subtables, read from the raw bytes
+  // (see core/cmapRead.ts): fonteditor-core merges the legacy Macintosh
+  // subtable into its map as if its byte codes were Unicode, which invents
+  // mappings such as “≤” answering to U+00B2.
+  const cmapRead = readCmapFromSfnt(buffer);
+  const cmapByGlyph = cmapRead ? codePointsByGlyph(cmapRead.map) : null;
+  if (cmapRead?.source === 'macRoman') {
+    warnings.push('This font has no Unicode character table; its legacy Macintosh (Mac Roman) table was converted to Unicode.');
+  }
+  if (cmapRead?.source === 'symbol') {
+    warnings.push('This font only has a Windows Symbol character table; its code points are kept as they are (usually U+F020…U+F0FF).');
+  }
+  if (cmapRead?.variationSequences) {
+    warnings.push(`${cmapRead.variationSequences} Unicode variation sequence(s) cannot be edited or exported and were ignored.`);
+  }
+
   // First pass: create docs so compound references can be resolved by index.
   for (let i = 0; i < srcGlyf.length; i++) {
     const g = srcGlyf[i];
-    const unicodes: number[] = Array.isArray(g.unicode) ? g.unicode : g.unicode != null ? [g.unicode] : [];
+    const parsed: number[] = Array.isArray(g.unicode) ? g.unicode : g.unicode != null ? [g.unicode] : [];
+    const unicodes: number[] = cmapByGlyph ? (cmapByGlyph.get(i) ?? []) : parsed;
+    // keep the parsed source consistent with what the file really maps: it is
+    // kept for export (boxes, kerning) and must not carry the Mac Roman codes
+    if (cmapByGlyph) g.unicode = unicodes.length ? [...unicodes] : undefined;
     const unicode = unicodes.length ? unicodes[0] : null;
     const extraUnicodes = [...new Set(unicodes.slice(1))].filter((cp) => cp !== unicode);
     if (extraUnicodes.length) extraCount += extraUnicodes.length;
@@ -512,6 +563,43 @@ function applyGlyfBounds(records: Array<Record<string, any>>, glyphs: GlyphDoc[]
   };
 }
 
+/** Every code point a document maps, primary and extra. */
+export function documentCodePoints(doc: FontDoc): Set<number> {
+  const out = new Set<number>();
+  for (const g of doc.glyphs) for (const cp of allUnicodes(g)) out.add(cp);
+  return out;
+}
+
+/** Code points a parsed source font maps (its glyf records carry the lists). */
+function sourceCodePoints(sourceTtf: TtfLike | null): Set<number> {
+  const out = new Set<number>();
+  for (const rec of (sourceTtf?.glyf ?? []) as Array<Record<string, any>>) {
+    const u = rec?.unicode;
+    if (Array.isArray(u)) for (const cp of u) out.add(Number(cp));
+    else if (typeof u === 'number') out.add(u);
+  }
+  return out;
+}
+
+/**
+ * The OS/2 ulUnicodeRange1-4 words an export should carry.
+ *
+ * A font created in Pixeel gets the blocks of its own characters, computed
+ * like fontTools' `intersectUnicodeRanges`. An imported font keeps the words
+ * its designer chose and only gains bits for blocks whose characters were
+ * added in Pixeel — a font may deliberately claim (or not claim) a block it
+ * only partly covers, and an export must not quietly change that.
+ */
+export function exportUnicodeRanges(doc: FontDoc, sourceTtf: TtfLike | null): [number, number, number, number] {
+  const docPoints = documentCodePoints(doc);
+  const os2 = (sourceTtf?.['OS/2'] ?? null) as Record<string, unknown> | null;
+  if (!os2) return rangeWords(unicodeRangeBits(docPoints));
+  const sourceWords = [1, 2, 3, 4].map((i) => Number(os2[`ulUnicodeRange${i}`] ?? 0) >>> 0);
+  const sourcePoints = sourceCodePoints(sourceTtf);
+  const added = [...docPoints].filter((cp) => !sourcePoints.has(cp));
+  return rangeWords(new Set([...wordBits(sourceWords), ...unicodeRangeBits(added)]));
+}
+
 /** Build the TTF binary plus a report describing what was preserved/dropped. */
 export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: ExportReport } {
   const { doc, options } = input;
@@ -612,6 +700,14 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   }
 
   base.glyf = newGlyf;
+  // maxp.maxZones: how many interpreter zones a glyph program may use — 1
+  // (outline only) or 2 (outline + twilight). fonteditor-core's blank template
+  // starts at 0 and its writer copies `ttf.maxp.maxZones || 0`, so every font
+  // created in Pixeel (the MAX7219 package font included) shipped the illegal
+  // 0 and OTS warned "maxp: Bad maxZones: 0". The value survives the write.
+  const baseMaxp = { ...((base.maxp ?? {}) as Record<string, unknown>) };
+  if (!(Number(baseMaxp.maxZones) >= 1)) baseMaxp.maxZones = 2;
+  base.maxp = baseMaxp as never;
   base.head = { ...(base.head as object), unitsPerEm: doc.metrics.unitsPerEm, indexToLocFormat: 0 } as any;
   base.hhea = { ...(base.hhea as object), ascent: doc.metrics.ascent, descent: doc.metrics.descent, lineGap: doc.metrics.lineGap } as any;
   const os2 = base['OS/2'];
@@ -631,6 +727,13 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
     }
   }
 
+  // --- OS/2 ulUnicodeRange1-4
+  // fonteditor-core's OS/2 writer sets ulUnicodeRange2 to 268435456 (only the
+  // "Private Use Area" bit) in every font it writes, throwing away the real
+  // coverage bits, and its `support` hook cannot override OS/2. The correct
+  // words are computed here and written by the finalize pass.
+  const unicodeRanges = exportUnicodeRanges(doc, input.sourceTtf);
+
   // Name table: overlay editable fields; unknown/imported extra records survive.
   const names: Record<string, string> = { ...((base.name as Record<string, string>) ?? {}) };
   const m = doc.meta;
@@ -649,7 +752,15 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
 
   const writerOptions = {
     hinting: options.preserveHinting,
-    kerning: options.preserveKerning,
+    // fonteditor-core's writer builds its table list from two overlapping sets:
+    // `hinting` copies cvt/fpgm/prep/gasp *and* GPOS/kern/kerx, `kerning` copies
+    // GPOS/kern/kerx again (ttfwriter.js prepareDump). Asking for both wrote
+    // every kerning table twice — a duplicate tag in the sfnt directory, which
+    // breaks its ascending order (OTS: "Table directory is not correctly
+    // ordered") and doubled the data (+210 KB on Lato). The `kerning` flag is
+    // therefore only needed when `hinting` is off; kerning is still dropped by
+    // deleting GPOS/kern/kerx from `base` above when preserveKerning is false.
+    kerning: options.preserveKerning && !options.preserveHinting,
     writeZeroContoursGlyfData: false,
     // fonteditor-core derives the head box from the glyf boxes, but its hhea
     // extents assume lsb = xMin and count empty glyphs; with no outline at all
@@ -659,11 +770,24 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
       ...(bounds.inked ? {} : { head: { xMin: 0, yMin: 0, xMax: 0, yMax: 0 } }),
     },
   };
+  // maxp.maxInstructionDefs (how many IDEFs the font programme declares) is
+  // missing from the object OS2.js hands the maxp writer, so a hinted font
+  // that uses instruction definitions exported 0 and its `fpgm` IDEFs became
+  // undefined opcodes. Dropping the hinting legitimately zeroes it.
+  const srcMaxp = (input.sourceTtf?.maxp ?? {}) as Record<string, unknown>;
+  const maxInstructionDefs = options.preserveHinting ? Number(srcMaxp.maxInstructionDefs) || 0 : 0;
+
   const font = Font.create().set(base as never);
   const raw = font.write({ type: 'ttf', ...writerOptions }) as unknown as ArrayBuffer | Uint8Array;
   // fonteditor-core returns a Node Buffer in Node environments — normalize to a
   // standalone ArrayBuffer (handles pooled buffers with a byteOffset).
-  const buffer = toStandaloneBuffer(raw);
+  // The finalize pass then corrects the fields the writer gets wrong (glyph
+  // names in post, Mac Roman codes in cmap) and recomputes the checksums.
+  const buffer = finalizeSfnt(toStandaloneBuffer(raw), {
+    glyphNames: doc.glyphs.map((g, i) => g.name || `glyph${i}`),
+    unicodeRanges,
+    maxInstructionDefs,
+  });
 
   const srcTables = doc.source?.tables ?? [];
   const preserved = srcTables.filter((t) =>
@@ -721,10 +845,27 @@ export interface ReopenedFont {
   glyphAt(codePoint: number): Record<string, any> | null;
 }
 
+/**
+ * The Unicode character map of an sfnt file, read from its raw cmap subtables
+ * (see core/cmapRead.ts). fonteditor-core's own `ttf.cmap` merges the legacy
+ * Macintosh subtable in as if its byte codes were Unicode, which would make a
+ * check believe a character is in the file when only its Mac Roman code is.
+ * Falls back to the parsed map for a font this reader finds nothing in.
+ */
+export function unicodeCmapOf(buffer: ArrayBuffer | Uint8Array, parsed?: Record<string, number> | Record<number, number>): Record<number, number> {
+  const read = readCmapFromSfnt(buffer);
+  if (read && read.map.size) {
+    const out: Record<number, number> = {};
+    for (const [cp, gid] of read.map) out[cp] = gid;
+    return out;
+  }
+  return (parsed ?? {}) as Record<number, number>;
+}
+
 export function reopenFont(buffer: ArrayBuffer): ReopenedFont {
   const font = Font.create(buffer, { type: 'ttf', hinting: true, kerning: true }) as unknown as FontInstance;
   const ttf = font.data as unknown as TtfLike;
-  const cmap = (ttf.cmap ?? {}) as unknown as Record<number, number>;
+  const cmap = unicodeCmapOf(buffer, ttf.cmap as Record<string, number> | undefined);
   const glyphAt = (cp: number): Record<string, any> | null => {
     const idx = cmap[cp];
     if (idx === undefined || idx === null) return null;
@@ -776,6 +917,8 @@ export function verifyExportedCoverage(buffer: ArrayBuffer, doc: FontDoc): Expor
 export function validateExport(buffer: ArrayBuffer, doc: FontDoc, expectedKernPairs?: number): ValidationResult {
   const checks: ValidationCheck[] = [];
   const push = (name: string, ok: boolean, detail: string) => checks.push({ name, ok, detail });
+  const dir = checkTableDirectory(buffer);
+  push('Table directory', dir.ok, dir.detail);
   try {
     const font = Font.create(buffer, { type: 'ttf', kerning: expectedKernPairs !== undefined }) as unknown as FontInstance;
     const ttf = font.data as unknown as TtfLike;
@@ -783,7 +926,7 @@ export function validateExport(buffer: ArrayBuffer, doc: FontDoc, expectedKernPa
     push('Glyph count', ttf.glyf.length === doc.glyphs.length, `expected ${doc.glyphs.length}, got ${ttf.glyf.length}`);
     push('unitsPerEm', (ttf.head as any).unitsPerEm === doc.metrics.unitsPerEm, `expected ${doc.metrics.unitsPerEm}, got ${(ttf.head as any).unitsPerEm}`);
 
-    const cmap = (ttf.cmap ?? {}) as Record<string, number>;
+    const cmap = unicodeCmapOf(buffer, ttf.cmap as Record<string, number> | undefined);
     const mapped = doc.glyphs.filter((g) => g.unicode !== null);
     const sample = mapped.slice(0, 200);
     let bad = 0;
