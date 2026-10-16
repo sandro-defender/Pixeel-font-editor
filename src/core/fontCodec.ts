@@ -700,6 +700,14 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   }
 
   base.glyf = newGlyf;
+  // maxp.maxZones: how many interpreter zones a glyph program may use — 1
+  // (outline only) or 2 (outline + twilight). fonteditor-core's blank template
+  // starts at 0 and its writer copies `ttf.maxp.maxZones || 0`, so every font
+  // created in Pixeel (the MAX7219 package font included) shipped the illegal
+  // 0 and OTS warned "maxp: Bad maxZones: 0". The value survives the write.
+  const baseMaxp = { ...((base.maxp ?? {}) as Record<string, unknown>) };
+  if (!(Number(baseMaxp.maxZones) >= 1)) baseMaxp.maxZones = 2;
+  base.maxp = baseMaxp as never;
   base.head = { ...(base.head as object), unitsPerEm: doc.metrics.unitsPerEm, indexToLocFormat: 0 } as any;
   base.hhea = { ...(base.hhea as object), ascent: doc.metrics.ascent, descent: doc.metrics.descent, lineGap: doc.metrics.lineGap } as any;
   const os2 = base['OS/2'];
@@ -762,6 +770,13 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
       ...(bounds.inked ? {} : { head: { xMin: 0, yMin: 0, xMax: 0, yMax: 0 } }),
     },
   };
+  // maxp.maxInstructionDefs (how many IDEFs the font programme declares) is
+  // missing from the object OS2.js hands the maxp writer, so a hinted font
+  // that uses instruction definitions exported 0 and its `fpgm` IDEFs became
+  // undefined opcodes. Dropping the hinting legitimately zeroes it.
+  const srcMaxp = (input.sourceTtf?.maxp ?? {}) as Record<string, unknown>;
+  const maxInstructionDefs = options.preserveHinting ? Number(srcMaxp.maxInstructionDefs) || 0 : 0;
+
   const font = Font.create().set(base as never);
   const raw = font.write({ type: 'ttf', ...writerOptions }) as unknown as ArrayBuffer | Uint8Array;
   // fonteditor-core returns a Node Buffer in Node environments — normalize to a
@@ -771,6 +786,7 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   const buffer = finalizeSfnt(toStandaloneBuffer(raw), {
     glyphNames: doc.glyphs.map((g, i) => g.name || `glyph${i}`),
     unicodeRanges,
+    maxInstructionDefs,
   });
 
   const srcTables = doc.source?.tables ?? [];

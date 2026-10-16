@@ -20,6 +20,9 @@
  *  - `OS/2` xAvgCharWidth: averaged over every glyph including the zero-width
  *    ones, while OS/2 version 3 and later average the non-zero-width glyphs
  *    only (Lato 1009 instead of 1108, DotMatrix 44 instead of 47).
+ *  - `maxp` maxInstructionDefs: the writer builds the maxp table from an
+ *    object (OS2.js `ttf.support.maxp`) that has no maxInstructionDefs field
+ *    at all, so a hinted font that defines instructions (IDEF) exported 0.
  */
 import { readCmapFromSfnt } from './cmapRead';
 import { MAC_ROMAN_TO_UNICODE, STANDARD_MAC_GLYPH_INDEX } from './macEncoding';
@@ -40,6 +43,8 @@ export interface FinalizeOptions {
   glyphNames?: readonly string[];
   /** OS/2 ulUnicodeRange1-4 (see core/os2Ranges.ts). */
   unicodeRanges?: readonly [number, number, number, number];
+  /** maxp.maxInstructionDefs — the writer always leaves it empty. */
+  maxInstructionDefs?: number;
 }
 
 /** Field offsets inside the OS/2 table (every version has them). */
@@ -106,6 +111,17 @@ export function patchOs2UnicodeRanges(os2: Uint8Array, words: readonly number[])
   view.setUint32(OS2_OFFSET.ulUnicodeRange2, (words[1] ?? 0) >>> 0);
   view.setUint32(OS2_OFFSET.ulUnicodeRange3, (words[2] ?? 0) >>> 0);
   view.setUint32(OS2_OFFSET.ulUnicodeRange4, (words[3] ?? 0) >>> 0);
+  return out;
+}
+
+/** Field offset inside a version 1.0 maxp table (0.5 has no such field). */
+const MAXP_INSTRUCTION_DEFS = 22;
+
+/** Write maxp.maxInstructionDefs; null when the table is not version 1.0. */
+export function patchMaxInstructionDefs(maxp: Uint8Array, value: number): Uint8Array | null {
+  if (maxp.length < 32 || viewOf(maxp).getUint32(0) !== 0x00010000) return null;
+  const out = new Uint8Array(maxp);
+  viewOf(out).setUint16(MAXP_INSTRUCTION_DEFS, Math.max(0, Math.min(0xffff, Math.round(value))));
   return out;
 }
 
@@ -228,6 +244,15 @@ export function finalizeSfnt(buffer: ArrayBuffer | Uint8Array, options: Finalize
     data = patchOs2AvgCharWidth(data, avg) ?? data;
     if (data.some((b, i) => b !== os2.data[i])) {
       tables = withTable(tables, 'OS/2', data);
+      changed = true;
+    }
+  }
+
+  const maxp = tables.find((t) => t.tag === 'maxp');
+  if (maxp && options.maxInstructionDefs !== undefined) {
+    const patched = patchMaxInstructionDefs(maxp.data, options.maxInstructionDefs);
+    if (patched && patched.some((b, i) => b !== maxp.data[i])) {
+      tables = withTable(tables, 'maxp', patched);
       changed = true;
     }
   }
