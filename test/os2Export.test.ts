@@ -3,6 +3,7 @@
  *  - ulUnicodeRange1–4: a new font gets the blocks of its own characters
  *    (fonteditor-core forced the Private Use bit on every font); an imported
  *    font keeps its ranges and gains bits for characters added in Pixeel.
+ *  - xAvgCharWidth: the mean of the glyphs with a non-zero advance (OS/2 v3+).
  *  - every table checksum and head.checkSumAdjustment are correct.
  */
 import { describe, expect, it } from 'vitest';
@@ -74,6 +75,30 @@ describe('OS/2 Unicode ranges', () => {
     expect(computeUnicodeRanges([0x41], [7, 0, 0, 0])).toEqual([7, 0, 0, 0]);
     expect(computeUnicodeRanges([], null)).toEqual([0, 0, 0, 0]);
     expect(computeUnicodeRanges([0x41, 0x2264], null)).toEqual([1, 64, 0, 0]); // Basic Latin (bit 0), Mathematical Operators (bit 38)
+  });
+});
+
+describe('OS/2 xAvgCharWidth', () => {
+  it('Lato: the mean of the glyphs with a non-zero advance (1108, not the all-glyph 1009)', async () => {
+    const { doc, sourceTtf } = await importFont(bytesOf(LATO), 'Lato-Regular.ttf');
+    const { buffer } = buildTtf({ doc, sourceTtf, options: { preserveHinting: true, preserveKerning: true, validate: false } });
+    expect(parseTtf(buffer)['OS/2'].xAvgCharWidth).toBe(1108);
+  });
+
+  it('Quantico: 589 over its non-zero advances', async () => {
+    const { doc, sourceTtf } = await importFont(bytesOf(QUANTICO), 'Quantico-Bold.ttf');
+    const { buffer } = buildTtf({ doc, sourceTtf, options: { preserveHinting: true, preserveKerning: true, validate: false } });
+    expect(parseTtf(buffer)['OS/2'].xAvgCharWidth).toBe(589);
+  });
+
+  it('a new font with zero-width glyphs: the average ignores them', () => {
+    const doc = fresh([0x41, 0x42]);
+    const withBlank = { ...doc, glyphs: [...doc.glyphs, { ...doc.glyphs[1], id: 'zz', name: 'zerowidth', unicode: null, extraUnicodes: undefined, advanceWidth: 0, pixel: null, kind: 'empty' as const, contours: [] }] };
+    const { buffer } = buildTtf({ doc: withBlank as FontDoc, sourceTtf: null, options: { preserveHinting: true, preserveKerning: true, validate: false } });
+    const advances = parseTtf(buffer).glyf.map((g: any) => Math.round(g.advanceWidth)).filter((w: number) => w > 0);
+    const mean = Math.round(advances.reduce((a: number, b: number) => a + b, 0) / advances.length);
+    expect(parseTtf(buffer)['OS/2'].xAvgCharWidth).toBe(mean);
+    expect(advances.length).toBeLessThan(parseTtf(buffer).glyf.length);
   });
 });
 

@@ -678,10 +678,13 @@ export function buildTtf(input: ExportInput): { buffer: ArrayBuffer; report: Exp
   // Then the writer's post names and Mac cmap are corrected (see sfntFinalize).
   const glyphOfCp = new Map<number, number>();
   doc.glyphs.forEach((g, i) => allUnicodes(g).forEach((cp) => { if (!glyphOfCp.has(cp)) glyphOfCp.set(cp, i); }));
+  // xAvgCharWidth (OS/2 v3+): the mean advance of the glyphs that have one
+  const advances = newGlyf.map((r) => Number(r.advanceWidth)).filter((w) => w > 0);
+  const xAvgCharWidth = advances.length ? advances.reduce((a, b) => a + b, 0) / advances.length : 0;
   const buffer = finalizeSfnt(toStandaloneBuffer(raw), {
     glyphNames: newGlyf.map((r) => String(r.name)),
     glyphOfCodePoint: (cp) => glyphOfCp.get(cp) ?? 0,
-    os2: { unicodeRanges: computeUnicodeRanges(glyphOfCp.keys(), sourceRanges) },
+    os2: { xAvgCharWidth, unicodeRanges: computeUnicodeRanges(glyphOfCp.keys(), sourceRanges) },
   });
 
   const srcTables = doc.source?.tables ?? [];

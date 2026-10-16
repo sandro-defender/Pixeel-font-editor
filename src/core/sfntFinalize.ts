@@ -76,12 +76,13 @@ export function patchMacRomanSubtable(cmap: Uint8Array, glyphOfCodePoint: (cp: n
 
 /**
  * OS/2 fields fonteditor-core gets wrong: it sets ulUnicodeRange2 to the Private
- * Use bit for every font.
+ * Use bit for every font, and xAvgCharWidth averages over zero-width glyphs too.
  */
-export function patchOs2(os2: Uint8Array, values: { unicodeRanges: readonly number[] }): Uint8Array {
+export function patchOs2(os2: Uint8Array, values: { xAvgCharWidth: number; unicodeRanges: readonly number[] }): Uint8Array {
   if (os2.byteLength < 58) return os2; // version 0 is 78 bytes, but anything shorter has no ranges
   const out = os2.slice();
   const v = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  v.setInt16(2, Math.max(-32768, Math.min(32767, Math.round(values.xAvgCharWidth))));
   values.unicodeRanges.forEach((word, i) => v.setUint32(42 + i * 4, word >>> 0));
   return out;
 }
@@ -92,7 +93,7 @@ export interface FinalizeInput {
   /** Code point → glyph index for the written font (Unicode mappings only). */
   glyphOfCodePoint: (cp: number) => number;
   /** OS/2 values the writer gets wrong (see patchOs2). */
-  os2: { unicodeRanges: readonly number[] };
+  os2: { xAvgCharWidth: number; unicodeRanges: readonly number[] };
 }
 
 /** Apply every correction to a written sfnt and return the new bytes. */
