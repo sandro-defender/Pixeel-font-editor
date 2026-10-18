@@ -20,7 +20,9 @@ import { applyLicense } from '../src/core/license';
 import { deriveMetaFields } from '../src/core/metadata';
 import type { FontDoc } from '../src/core/types';
 import { exportFont } from '../src/services/exportService';
-import { DEFAULT_EXPORT_OPTIONS } from '../src/core/fontCodec';
+import { DEFAULT_EXPORT_OPTIONS, importFont } from '../src/core/fontCodec';
+import { detectFontPixelGrid, pixelizeFont } from '../src/core/pixelGrid';
+import { normalizeFontDoc } from '../src/core/project';
 import { buildMax7219DebugLog, editorDiagnosis } from '../src/services/max7219DebugLog';
 import { applyLedMatrix } from '../src/state/glyphActions';
 import { Font } from 'fonteditor-core';
@@ -174,6 +176,7 @@ describe('MAX7219 Matrix Clock export — identifier derivation', () => {
     expect(guessLicenseName('SIL OPEN FONT LICENSE Version 1.1\n...')).toBe('SIL OFL 1.1');
     expect(guessLicenseName('Copyright (c) ... MIT License.')).toBe('MIT');
     expect(guessLicenseName('Licensed under CC BY-SA 3.0.')).toBe('CC BY-SA 3.0');
+    expect(guessLicenseName('Creative Commons Attribution Share Alike')).toBe('CC BY-SA');
     expect(guessLicenseName('')).toBe('');
   });
 });
@@ -759,5 +762,78 @@ describe('MAX7219 debug log', () => {
     expect(log).toMatch(/'B' \(U\+0042\)\s+missing/);
     expect(log).not.toMatch(/'A' \(U\+0041\)\s+8×8/);
     expect(log).toContain('(1 other character measured without problems)');
+  });
+
+  it('normalizes PixelForge power-of-2 unitsPerEm (32 vs 8×3=24) and passes 7-row digits with 1-row descender (max7219 Georgian)', async () => {
+    // Build a PixelForge-style 5×8 font with 3-unit cells (ascent=21, descent=-3)
+    // and power-of-2 padded head.unitsPerEm=32, 7-row digits (y=0..21) and
+    // 1-row descender on Georgian 'ჯ' (y=-3..18).
+    let doc = createNewFont({
+      familyName: 'max7219 Georgian',
+      styleName: 'Regular',
+      gridWidth: 5,
+      gridHeight: 8,
+      descentRows: 1,
+      led: { rows: 8, cols: 5, spacing: 1, cellUnits: 3, descentRows: 1 },
+    });
+    doc = {
+      ...doc,
+      meta: deriveMetaFields({ ...doc.meta, licence: 'Creative Commons Attribution Share Alike' }),
+    };
+    for (const ch of MAX7219_DEFAULT_GLYPHS) {
+      if (ch === ' ') continue;
+      const cp = ch.codePointAt(0)!;
+      doc = drawGlyph(doc, cp, (bm) => {
+        if (ch >= '0' && ch <= '9') {
+          // 5×7 digit on rows 1..7 above the baseline (y = 0..21)
+          for (let y = 1; y < 8; y++) for (let x = 0; x < 5; x++) bm.set(x, y, 1);
+        } else if (ch === ':') {
+          bm.set(0, 2, 1);
+          bm.set(0, 5, 1);
+        } else if (ch === 'ჯ') {
+          // Uses the 1-row descender (row 0, y = -3..0) up to row 6 (y = 0..18)
+          for (let y = 0; y <= 6; y++) bm.set(1, y, 1);
+        } else {
+          for (let y = 1; y <= 5; y++) bm.set(1, y, 1);
+        }
+      }).doc;
+      const g = doc.glyphs.find((x) => x.unicode === cp)!;
+      if (ch === ':') g.advanceWidth = 6; // 2 cells
+    }
+    const { buffer: cleanBuf } = await exportFont(doc, { ...DEFAULT_EXPORT_OPTIONS });
+    // Simulate PixelForge writing head.unitsPerEm = 32 while ascent=21, descent=-3
+    const pfFont = Font.create(cleanBuf, { type: 'ttf' });
+    (pfFont as unknown as { data: any }).data.head.unitsPerEm = 32;
+    const pfBuf = pfFont.write({ type: 'ttf' }) as ArrayBuffer;
+
+    // 1. importFont normalizes unitsPerEm from 32 to 24 (8 × 3)
+    const { doc: imported } = await importFont(pfBuf, 'max7219.ttf');
+    expect(imported.metrics.unitsPerEm).toBe(24);
+    expect(imported.metrics.ascent).toBe(21);
+    expect(imported.metrics.descent).toBe(-3);
+
+    // 2. pixelizeFont also normalizes unitsPerEm even if the doc still had 32
+    const det = detectFontPixelGrid({ ...imported, metrics: { ...imported.metrics, unitsPerEm: 32 } });
+    expect(det.found).toBe(true);
+    const { doc: pixelized } = pixelizeFont(
+      { ...imported, metrics: { ...imported.metrics, unitsPerEm: 32 } },
+      { grid: det.grid! },
+    );
+    expect(pixelized.metrics.unitsPerEm).toBe(24);
+
+    // 3. normalizeFontDoc repairs a saved session that had unitsPerEm=32
+    const repaired = normalizeFontDoc({ ...pixelized, metrics: { ...pixelized.metrics, unitsPerEm: 32 } });
+    expect(repaired.metrics.unitsPerEm).toBe(24);
+
+    // 4. MAX7219 export passes all 7 checks with zero diagnosis warnings
+    const settings = defaultMax7219Settings(pixelized);
+    expect(settings.licenseName).toBe('CC BY-SA');
+    const pkg = await buildMax7219Package(pixelized, settings);
+    expect(pkg.validation.ok).toBe(true);
+    expect(pkg.validation.tallestDigitPx).toBe(7);
+    expect(pkg.validation.metrics.pxPerLatticeCell).toBe(1);
+    expect(pkg.validation.diagnosis).toEqual([]);
+    expect(editorDiagnosis(pixelized, pkg.validation)).toEqual([]);
+    expect(pkg.reportContent).toContain('**Status:** PASS');
   });
 });

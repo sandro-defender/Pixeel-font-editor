@@ -91,8 +91,11 @@ const LICENSE_PATTERNS: LicenseNamePattern[] = [
   { re: /BSD\s+[23]-Clause/i, name: 'BSD' },
   { re: /CC0\s+1\.0|Creative\s+Commons\s+Zero/i, name: 'CC0 1.0' },
   { re: /CC\s+BY(?:-NC)?(?:-SA)?\s+\d+\.\d+/i, name: (m: RegExpMatchArray) => m[0].replace(/\s+/g, ' ').trim() },
+  { re: /Creative\s+Commons\s+Attribution[\s-]+NonCommercial[\s-]+Share\s*Alike(?:\s+(\d+\.\d+))?/i, name: byVersion('CC BY-NC-SA') },
+  { re: /Creative\s+Commons\s+Attribution[\s-]+Share[\s-]*Alike(?:\s+(\d+\.\d+))?/i, name: byVersion('CC BY-SA') },
   { re: /Creative\s+Commons\s+Attribution(?:-NonCommercial)?(?:-ShareAlike)?\s+(\d+\.\d+)/i, name: byVersion('CC BY') },
-  { re: /CC\s+BY-SA\s+(\d+\.\d+)/i, name: byVersion('CC BY-SA') },
+  { re: /Creative\s+Commons\s+Attribution\b/i, name: 'CC BY' },
+  { re: /CC\s+BY-SA(?:\s+(\d+\.\d+))?/i, name: byVersion('CC BY-SA') },
 ];
 
 /** Best-effort short license name from raw license text. */
@@ -577,7 +580,7 @@ export function validateMax7219Font(ttfBuffer: ArrayBuffer, glyphSet: string): V
   push(`No glyph taller than ${PX} px`, tooTall.length === 0,
     tooTall.length === 0 ? 'Every glyph fits within 8 rows.' : `Taller than 8: ${tooTall.map((m) => `${label(m.cp)} (${m.heightPx}px)`).join(', ')}`);
 
-  // 3. Tallest digit exactly 8 px
+  // 3. Tallest digit is 8 px (or 7 px when the 8-row grid reserves a descender row on a whole-LED lattice)
   let tallestDigit = 0;
   const digitHeights: string[] = [];
   for (const d of DIGITS) {
@@ -585,10 +588,20 @@ export function validateMax7219Font(ttfBuffer: ArrayBuffer, glyphSet: string): V
     if (h > tallestDigit) tallestDigit = h;
     digitHeights.push(`${d}=${h}`);
   }
-  push('Tallest digit is exactly 8 px', tallestDigit === PX,
+  const wholeLedLattice =
+    metrics.pxPerLatticeCell === null ||
+    Math.abs(metrics.pxPerLatticeCell - Math.round(metrics.pxPerLatticeCell)) <= EPS;
+  const sevenRowWithDescender =
+    tallestDigit === PX - 1 &&
+    metrics.descenderPx <= -1 &&
+    wholeLedLattice;
+  const digitHeightOk = tallestDigit === PX || sevenRowWithDescender;
+  push('Tallest digit is exactly 8 px', digitHeightOk,
     tallestDigit === PX
       ? `Digits fill all 8 rows (${digitHeights.join(', ')}).`
-      : `Tallest digit is ${tallestDigit} px (need 8). Heights: ${digitHeights.join(', ')}`);
+      : sevenRowWithDescender
+        ? `Digits fill all 7 ascent rows above the descender row (${digitHeights.join(', ')}).`
+        : `Tallest digit is ${tallestDigit} px (need 8). Heights: ${digitHeights.join(', ')}`);
 
   // 4. "88:88:88" width
   const width = measureTestString(measurements);
@@ -684,7 +697,9 @@ function diagnoseMax7219(
   }
 
   // Digit height
-  if (tallestDigit > 0 && tallestDigit !== PX) {
+  const wholeLedLattice = p === null || Math.abs(p - Math.round(p)) <= EPS;
+  const sevenRowWithDescender = tallestDigit === PX - 1 && metrics.descenderPx <= -1 && wholeLedLattice;
+  if (tallestDigit > 0 && tallestDigit !== PX && !sevenRowWithDescender) {
     const tallest = [...DIGITS].map(digit).filter((m): m is GlyphMeasurement => !!m && m.heightPx === tallestDigit)[0];
     const d = String.fromCodePoint(tallest.cp);
     const inkFU = tallest.bboxFU ? tallest.bboxFU.yMax - tallest.bboxFU.yMin : 0;
@@ -865,7 +880,11 @@ function buildExportReport(s: Max7219ExportSettings, v: ValidationResult, sha: s
   const cell = (s: string) => s.replace(/\|/g, '\\|');
   lines.push('## Measurements');
   lines.push('');
-  lines.push(`- Tallest digit 0-9: **${v.tallestDigitPx} px** (must be 8 px)`);
+  lines.push(
+    v.tallestDigitPx === MAX7219_PIXEL_SIZE - 1 && v.checks.find((c) => c.name.includes('Tallest digit'))?.ok
+      ? `- Tallest digit 0-9: **${v.tallestDigitPx} px** (7 ascent rows + 1 descender row)`
+      : `- Tallest digit 0-9: **${v.tallestDigitPx} px** (must be 8 px)`,
+  );
   lines.push(`- "${MAX7219_TEST_STRING}" advance width: **${v.measuredTestStringWidthPx} px** (must be ≤ ${MAX7219_MAX_WIDTH_PX} px)`);
   lines.push(`- Scale: the ${v.metrics.unitsPerEm}-unit em is drawn 8 px tall, so 1 px = ${fmtNum(v.metrics.unitsPerPx)} font units` +
     (v.metrics.latticeFU && v.metrics.pxPerLatticeCell
