@@ -33,6 +33,7 @@ import { pointsForSet } from './charSets';
 import { unwrapFont } from './woff';
 import { codePointsByGlyph, readCmapFromSfnt } from './cmapRead';
 import { finalizeSfnt } from './sfntFinalize';
+import { detectFontPixelGrid } from './pixelGrid';
 import { rangeWords, unicodeRangeBits, wordBits } from './os2Ranges';
 import { buildKernTable, effectivePairs, kerningFromTtf, kerningOf, kerningToIndexPairs, parseKernTable } from './kerning';
 
@@ -270,6 +271,31 @@ export async function importFont(input: ArrayBuffer | Uint8Array, fileName: stri
     },
     sourceRef: null, // assigned by the store when registering sourceTtf
   };
+
+  // Tools such as PixelForge pad head.unitsPerEm to a power of two (e.g. 32)
+  // even when every outline and vertical metric sits on an exact integer pixel
+  // grid whose true em span is ascent − descent (e.g. 8 × 3 = 24). Align
+  // unitsPerEm to the native pixel band so 1 drawn pixel = 1/rows em.
+  const metricSpan = doc.metrics.ascent - doc.metrics.descent;
+  if (
+    metricSpan >= 16 &&
+    metricSpan <= 16384 &&
+    doc.metrics.unitsPerEm !== metricSpan &&
+    doc.glyphs.length <= 500
+  ) {
+    const det = detectFontPixelGrid(doc, (g) => resolveGlyphContours(g, doc.glyphs));
+    if (
+      det.found &&
+      det.score === 0 &&
+      det.grid &&
+      Number.isInteger(det.grid.unitsPerCell) &&
+      det.grid.unitsPerCell >= 2 &&
+      Math.round(det.grid.rows * det.grid.unitsPerCell) === metricSpan &&
+      doc.metrics.unitsPerEm % det.grid.unitsPerCell !== 0
+    ) {
+      doc.metrics.unitsPerEm = metricSpan;
+    }
+  }
 
   const kern = kerningFromTtf(ttf as { kern?: ArrayLike<number>; GPOS?: ArrayLike<number> }, glyphs);
   if (kern) {

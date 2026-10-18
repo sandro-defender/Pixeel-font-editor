@@ -1874,7 +1874,18 @@ export function LedMatrixDialog(props: { slot: Slot }) {
   const askConfirm = useStore((s) => s.askConfirm);
   const doc = useStore((s) => s.fonts[props.slot]);
   const current = doc?.ledMatrix ?? null;
-  const template = useMemo(() => doc?.glyphs.find((g) => g.pixel)?.pixel ?? null, [doc]);
+  const template = useMemo(() => {
+    if (!doc) return null;
+    for (const cp of [0x30, 0x38, 0x48, 0x41]) {
+      const g = doc.glyphs.find((x) => x.pixel && hasCodePoint(x, cp));
+      if (g?.pixel) return g.pixel;
+    }
+    return (
+      doc.glyphs.find((g) => g.pixel && g.unicode !== 0x20)?.pixel ??
+      doc.glyphs.find((g) => g.pixel)?.pixel ??
+      null
+    );
+  }, [doc]);
   const initial = useMemo<LedMatrixSpec>(() => {
     if (current) return current;
     if (template) {

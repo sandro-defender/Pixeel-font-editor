@@ -106,7 +106,8 @@ export function editorDiagnosis(doc: FontDoc, v: ValidationResult): string[] {
   }
 
   // Height: grid rows → LED rows
-  if (v.tallestDigitPx !== PX) {
+  const digitHeightCheck = v.checks.find((c) => c.name.includes('Tallest digit'));
+  if (digitHeightCheck ? !digitHeightCheck.ok : v.tallestDigitPx !== PX) {
     const digits = [...DIGITS]
       .map((d) => editorGlyph(doc, d.codePointAt(0)!))
       .filter((e): e is EditorGlyph => !!e?.pixel && e.inkRows > 0);

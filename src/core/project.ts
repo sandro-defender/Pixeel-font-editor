@@ -92,7 +92,30 @@ export function normalizeFontDoc(font: FontDoc): FontDoc {
   // control/standard code points …) falls back to the default PUA mapping: the
   // project still opens, and no glyph is ever deleted because of it.
   const altDigits = font.altDigits && !altMappingIssue(font.altDigits.codepoints) ? { codepoints: font.altDigits.codepoints.map((cp) => Math.round(cp)) } : null;
-  const out: FontDoc = { ...font, glyphs };
+  let metrics = font.metrics;
+  const pixGlyphs = glyphs.filter((g) => g.pixel);
+  if (pixGlyphs.length > 0 && metrics) {
+    const p0 = pixGlyphs[0].pixel!;
+    const u = p0.unitsPerCell;
+    const h = p0.height;
+    const b = p0.baselineRow;
+    const emFU = Math.round(h * u);
+    if (
+      Number.isInteger(u) &&
+      u >= 2 &&
+      Number.isInteger(b) &&
+      emFU >= 16 &&
+      emFU <= 16384 &&
+      metrics.ascent === (h - b) * u &&
+      metrics.descent === -b * u &&
+      metrics.unitsPerEm !== emFU &&
+      metrics.unitsPerEm % u !== 0 &&
+      pixGlyphs.every((g) => g.pixel!.unitsPerCell === u && g.pixel!.height === h && g.pixel!.baselineRow === b)
+    ) {
+      metrics = { ...metrics, unitsPerEm: emFU };
+    }
+  }
+  const out: FontDoc = { ...font, metrics, glyphs };
   if (altDigits) out.altDigits = altDigits;
   else delete out.altDigits;
   return out;

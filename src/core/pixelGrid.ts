@@ -613,5 +613,27 @@ export function pixelizeFont(doc: FontDoc, opts: PixelizeOptions = {}): { doc: F
     };
   });
 
-  return { doc: { ...doc, glyphs }, report };
+  let metrics = doc.metrics;
+  if (scope === 'font' && report.converted > 0) {
+    const u = grid.unitsPerCell;
+    const emFU = Math.round(grid.rows * u);
+    const ascentFU = Math.round((grid.rows - grid.baselineRow) * u);
+    const descentFU = -Math.round(grid.baselineRow * u);
+    if (emFU >= 16 && emFU <= 16384 && ascentFU > 0 && descentFU <= 0) {
+      metrics = {
+        ...doc.metrics,
+        unitsPerEm: emFU,
+        ascent: ascentFU,
+        descent: descentFU,
+        lineGap: 0,
+        ...(doc.metrics.typoAscender !== undefined ? { typoAscender: ascentFU } : {}),
+        ...(doc.metrics.typoDescender !== undefined ? { typoDescender: descentFU } : {}),
+        ...(doc.metrics.typoLineGap !== undefined ? { typoLineGap: 0 } : {}),
+        ...(doc.metrics.winAscent !== undefined ? { winAscent: Math.max(0, ascentFU) } : {}),
+        ...(doc.metrics.winDescent !== undefined ? { winDescent: Math.max(0, -descentFU) } : {}),
+      };
+    }
+  }
+
+  return { doc: { ...doc, metrics, glyphs }, report };
 }

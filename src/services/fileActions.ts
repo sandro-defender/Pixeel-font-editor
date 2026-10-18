@@ -76,6 +76,10 @@ export async function importFontFile(slot: Slot, file: File): Promise<void> {
     const ref = sourceTtf ? registerImportedSource(sourceTtf) : null; // BDF has no outline source to preserve
     const before = [useStore.getState().fonts.A, useStore.getState().fonts.B];
     const imported = { ...doc, sourceRef: ref };
+    // PixelForge-style importer: when the font really is a pixel font there is
+    // one cell size at which every cell is either empty or completely full.
+    // Detect it before triggering store updates and toast timers.
+    const found = bdf ? null : detectImportedPixelGrid(imported);
     const current = useStore.getState();
     releasePreview(slot);
     current.loadFont(slot, imported, file.name);
@@ -91,10 +95,6 @@ export async function importFontFile(slot: Slot, file: File): Promise<void> {
     }
     warnings.forEach((w) => current.toast('warning', w));
 
-    // PixelForge-style importer: when the font really is a pixel font there is
-    // one cell size at which every cell is either empty or completely full.
-    // Offer the lossless conversion instead of leaving the outlines untouched.
-    const found = bdf ? null : detectImportedPixelGrid(imported);
     if (found?.found && found.grid) {
       const grid = found.grid;
       current.toast(
