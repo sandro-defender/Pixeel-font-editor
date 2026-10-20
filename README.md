@@ -24,7 +24,7 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | Transfer A↔B | **Copy** or **Move** one or many glyphs either direction (Move removes them from the source after copying; `.notdef` is never removed; skipped glyphs stay put); drag glyph cards onto the A/B tabs; preserve source metrics or adapt; optional proportional scaling by units-per-em; baseline-aligned preview; collision handling (replace / skip / reassign); confirmation step; one undo step reverts both fonts for a move |
 | Metadata & licensing | Full name-table editor (family, style, full/PostScript name, **version**, **author**, copyright, description, manufacturer, URLs); license editor with custom text or the **official SIL OFL 1.1 template** (editable holder + Reserved Font Names); `LICENSE.txt` export; license embedded in the exported name table; imported copyright/license preserved by default and never replaced silently |
 | New-font wizard | Name, style, **author**, **version** and **license are created automatically** — pick *SIL OFL 1.1* and the full license text, copyright line and Reserved Font Name are generated for you at creation time |
-| ESPHome export | One click downloads a **ZIP with everything ESPHome needs** — see [Using fonts with ESPHome](#using-fonts-with-esphome) |
+| ESPHome export | **Write custom/ folder (Matrix Clock)** writes the custom font slot directly to disk. One click downloads a **ZIP with everything ESPHome needs** — see [Using fonts with ESPHome](#using-fonts-with-esphome) |
 | Preview | Live text preview rendered from the *currently edited* font (including unsaved changes), custom text/size/letter-spacing, samples for Latin, Georgian, numbers, punctuation |
 | Persistence | Project files (`.pixeel.json`) with both fonts + metadata + grids + settings; automatic IndexedDB recovery snapshot restored after refresh |
 | Export correctness | Real `glyf` TrueType outlines with correct cmap, metrics, names, bboxes and checksums; re-parse validation of every export; explicit report of preserved vs dropped tables |
@@ -95,6 +95,32 @@ Notes:
   `.notdef` excluded). Trimming that list is the main lever on firmware size.
 - Quotes and backslashes in the glyph set are escaped, so the YAML always parses.
 - `LICENSE.txt` is included — respect the font's license when you redistribute.
+
+## Using fonts with the ESPHome MAX7219 Matrix Clock
+
+The [Matrix Clock project](https://github.com/sandro-defender/Esphome-Max7219-Matrix-Clock)
+accepts two MAX7219 exports from **Font → Export**:
+
+- **ZIP → catalogue integration:** validate the preview, download **Export for ESPHome
+  MAX7219 Matrix Clock**, then use the clock repository’s
+  `scripts/integrate_max7219_font.py` and the ZIP’s `INTEGRATION.md` to add a catalogue face.
+- **Custom folder → single-font build:** validate the preview, click **Write custom/ folder
+  (Matrix Clock)**, and pick the clock repository’s `custom/` directory. Its four slot files
+  are overwritten when swapping fonts. Then run:
+  `python scripts/use_pixeel_font.py --folder custom --repo <clock-repo> --flash`.
+  The installer patches the display and generates `dev-custom.yaml`; merely writing the folder
+  does not install or flash firmware. Browsers without secure File System Access download the
+  four files individually: move them into `custom/`. The ZIP flow always works.
+
+Design rules (checked against the compiled TTF):
+- Render at **size 8, bpp 1**; tallest digit `0`–`9` must be exactly **8 px**.
+- `88:88:88` must advance **≤ 48 px**, with no ink clipped when centred on the ink of `0`.
+- For pixel-exact output, **unitsPerEm = 8 × lattice**.
+- Default glyphs: `0123456789:.-/%!?+ აბგდევზთიკლმნოპჟრსტუფქღყშჩცძწჭხჯჰ`.
+
+`contractVersion: 1` in the manifest and `font-info.json` keeps the two projects in sync.
+Consumers ignore unknown files/JSON fields and use documented defaults for missing optional
+fields. Custom-slot YAML is a convenience; the clock installer regenerates it canonically.
 
 ## Using a Pixeel font in the MAX7219 Matrix Clock
 

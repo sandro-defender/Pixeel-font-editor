@@ -2,6 +2,11 @@
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { writeCustomFolder } from '../src/services/max7219CustomFolder';
+vi.mock('../src/services/max7219CustomFolder', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/services/max7219CustomFolder')>(),
+  writeCustomFolder: vi.fn().mockResolvedValue('written'),
+}));
 import { ExportDialog } from '../src/components/dialogs';
 import { applyLicense } from '../src/core/license';
 import { deriveMetaFields } from '../src/core/metadata';
@@ -33,6 +38,8 @@ describe('MAX7219 export dialog', () => {
   it('shows why validation fails and fills the debug log', async () => {
     useStore.getState().loadFont('A', wideGridFont(), null);
     render(<ExportDialog slot="A" />);
+    const folderButton = screen.getByRole('button', { name: 'Write custom/ folder (Matrix Clock)' }) as HTMLButtonElement;
+    expect(folderButton.disabled).toBe(true);
     fireEvent.click(await screen.findByRole('button', { name: 'Validate preview' }));
 
     // the cause and the fix sit right under the checks table…
@@ -50,5 +57,8 @@ describe('MAX7219 export dialog', () => {
     expect(log.value).not.toContain('Raw measurements');
     expect(screen.getByRole('button', { name: 'Copy debug log' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Download debug log' })).toBeTruthy();
+    await waitFor(() => expect(folderButton.disabled).toBe(false));
+    fireEvent.click(folderButton);
+    await waitFor(() => expect(writeCustomFolder).toHaveBeenCalledWith(expect.objectContaining({ 'font.ttf': expect.any(ArrayBuffer) })));
   }, 60000);
 });

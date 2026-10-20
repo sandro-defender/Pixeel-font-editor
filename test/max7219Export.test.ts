@@ -212,6 +212,7 @@ describe('MAX7219 YAML and manifest generation', () => {
     const s = settingsFor(doc);
     const pkg = await buildMax7219Package(doc, s);
 
+    expect(pkg.manifest.contractVersion).toBe(1);
     expect(pkg.manifest.slug).toBe('max7219-georgian');
     expect(pkg.manifest.label).toBe('MAX7219 Georgian');
     expect(pkg.manifest.firmwareId).toBe('font_max7219_georgian_source');
@@ -253,6 +254,7 @@ describe('MAX7219 ZIP layout', () => {
       'integration/fonts-readme-row.md',
     ].sort();
     expect(names).toEqual(expected);
+    expect(JSON.parse(await zip.file('font-manifest.json')!.async('string')).contractVersion).toBe(1);
     // No generic local yaml/file path should exist
     for (const n of names) {
       expect(n).not.toContain('packages/local_fonts');
