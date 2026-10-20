@@ -26,6 +26,7 @@ import { sha256Hex } from '../core/sha256';
 // ---------------------------------------------------------------------------
 
 export const MAX7219_DEFAULT_GLYPHS = '0123456789:.-/%!?+ აბგდევზთიკლმნოპჟრსტუფქღყშჩცძწჭხჯჰ';
+export const MAX7219_CONTRACT_VERSION = 1;
 export const MAX7219_PIXEL_SIZE = 8;
 export const MAX7219_BPP = 1;
 
@@ -858,6 +859,7 @@ function buildManifest(s: Max7219ExportSettings, firmwareId: string, macro: stri
     measuredTestString: '88:88:88',
     measuredTestStringWidthPx: v.measuredTestStringWidthPx,
     tallestDigitPx: v.tallestDigitPx,
+    contractVersion: MAX7219_CONTRACT_VERSION,
   };
   return JSON.stringify(manifest, null, 2) + '\n';
 }

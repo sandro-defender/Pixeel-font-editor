@@ -1,3 +1,4 @@
+import { buildCustomFolderFiles, writeCustomFolder } from '../services/max7219CustomFolder';
 /** All modal dialogs (MUI). Each one reads the store, validates input, and applies one undoable edit. */
 import { hasCodePoint } from '../core/unicodeMap';
 import { largeDigitPoints } from '../core/charSets';
@@ -810,6 +811,25 @@ export function ExportDialog(props: { slot: Slot }) {
     }
   };
 
+  const writeMax7219Folder = async () => {
+    if (!buffer || !m7219 || !m7219Preview || m7219DirtyFrom(m7219Preview.settings, m7219)) return;
+    setM7219Busy(true);
+    setM7219Error(null);
+    try {
+      const result = await writeCustomFolder(buildCustomFolderFiles(m7219Preview));
+      if (result !== 'cancelled') {
+        toast(result === 'downloaded' || !m7219Preview.validation.ok ? 'warning' : 'success',
+          (result === 'downloaded' ? 'Folder access unavailable. Move the four downloads into custom/. The ZIP flow always works. ' : 'Custom folder written. ') +
+          (!m7219Preview.validation.ok ? 'Validation FAILED; fix the reported issues before flashing. ' : '') +
+          'Next: python scripts/use_pixeel_font.py --folder custom --repo <clock-repo> --flash');
+      }
+    } catch (err) {
+      if (mounted.current) setM7219Error(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (mounted.current) setM7219Busy(false);
+    }
+  };
+
   const downloadMax7219 = async () => {
     if (!m7219) return;
     // If the user hasn't previewed yet, build now. Otherwise download the cached blob.
@@ -1014,6 +1034,15 @@ export function ExportDialog(props: { slot: Slot }) {
             </Button>
           }
         >
+          <Button
+            variant="outlined"
+            onClick={writeMax7219Folder}
+            disabled={!buffer || !m7219Preview || m7219DirtyFrom(m7219Preview.settings, m7219) || m7219Busy || running}
+            title="Choose the clock repository's custom/ folder; existing slot files will be overwritten"
+          >
+            Write custom/ folder (Matrix Clock)
+          </Button>
+          <Hint>Choose the clock repository’s <code>custom/</code> folder to replace its custom font slot.</Hint>
           <Hint>
             Build a ZIP that drops directly into <code>sandro-defender/Esphome-Max7219-Matrix-Clock</code>: <code>fonts/{m7219.slug}/</code>, <code>packages/fonts/{m7219.slug}.yaml</code>,
             <code>font-manifest.json</code>, <code>EXPORT-REPORT.md</code>, <code>INTEGRATION.md</code> and an <code>integration/</code> folder with snippets for configurator/display/tests/README. The font is rasterized at
