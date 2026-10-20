@@ -288,6 +288,12 @@ describe('MAX7219 ZIP layout', () => {
     const testMap = await zip.file('integration/test-mapping.txt')!.async('string');
     expect(testMap).toContain('"font_max7219_georgian_source": "MAX7219 Georgian",');
 
+    const integration = await zip.file('INTEGRATION.md')!.async('string');
+    expect(integration).toContain('Use your larger digits for the clock time');
+    expect(integration).toContain('ASCII digits `0`–`9`');
+    expect(integration).toContain('Use large digits for time…');
+    expect(integration).toContain('re-open Font → Export');
+
     const row = await zip.file('integration/fonts-readme-row.md')!.async('string');
     expect(row).toContain('| MAX7219 Georgian |');
     expect(row).toContain(`[${s.ttfFileName}](max7219-georgian/${s.ttfFileName})`);

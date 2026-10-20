@@ -470,6 +470,13 @@ export function GlyphBrowser(props: { slot: Slot }) {
           <Stack sx={{ alignItems: 'center', flexWrap: 'wrap' }} direction="row" spacing={1} useFlexGap>
             <Chip label={`${selectionCount} selected`} color="primary" onDelete={() => setMultiSelect(slot, [])} />
             <Button
+              variant="outlined"
+              onClick={() => openModal({ type: 'unicodeRemap', slot, glyphIds: ui.multiSelected })}
+              title="Move the selected glyphs to ASCII, Georgian, or a custom Unicode range"
+            >
+              Move to set…
+            </Button>
+            <Button
               variant="contained"
               color="primary"
               onClick={() => openModal({ type: 'transfer', from: slot, glyphIds: ui.multiSelected, mode: 'copy' })}

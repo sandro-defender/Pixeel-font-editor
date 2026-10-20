@@ -1,5 +1,6 @@
 /** All modal dialogs (MUI). Each one reads the store, validates input, and applies one undoable edit. */
 import { hasCodePoint } from '../core/unicodeMap';
+import { largeDigitPoints } from '../core/charSets';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Accordion,
@@ -69,6 +70,7 @@ import { KerningDialog } from './KerningDialog';
 import { VerticalMetricsDialog } from './VerticalMetricsDialog';
 import { UnicodeMappingsDialog } from './UnicodeMappingsDialog';
 import { CharacterSetsDialog } from './CharacterSetsDialog';
+import { BulkUnicodeRemapDialog } from './BulkUnicodeRemapDialog';
 
 /** Numeric field that keeps a number (NaN when empty) and reports it. */
 function NumberField(props: {
@@ -613,6 +615,7 @@ const KERNING_TABLES = ['GPOS', 'kern', 'kerx'];
 
 export function ExportDialog(props: { slot: Slot }) {
   const closeModal = useStore((s) => s.closeModal);
+  const openModal = useStore((s) => s.openModal);
   const setBusy = useStore((s) => s.setBusy);
   const toast = useStore((s) => s.toast);
   const doc = useStore((s) => s.fonts[props.slot]);
@@ -701,6 +704,28 @@ export function ExportDialog(props: { slot: Slot }) {
   };
 
   const psName = doc.meta.postScriptName || 'font';
+  const largeDigitGlyphs = largeDigitPoints(doc).map((cp) => doc.glyphs.find((g) => hasCodePoint(g, cp)) ?? null);
+  const largeDigitGlyphIds = largeDigitGlyphs.filter((g): g is NonNullable<typeof g> => !!g).map((g) => g.id);
+  const largeDigitsReady = largeDigitGlyphs.every((g) => !!g) && new Set(largeDigitGlyphIds).size === 10;
+  const largeDigitsAlreadyMapped = largeDigitsReady && largeDigitGlyphs.every((g, i) => !!g && hasCodePoint(g, 0x30 + i));
+  const prepareLargeDigitsForClock = () => {
+    if (largeDigitsAlreadyMapped) {
+      toast('info', 'Your large digits are already mapped to ASCII 0–9. Export the font and select it in the clock.');
+      return;
+    }
+    if (!largeDigitsReady) {
+      if (new Set(largeDigitGlyphIds).size !== largeDigitGlyphIds.length) {
+        toast('warning', 'The large-digit set needs ten distinct glyphs before it can be mapped to clock digits 0–9.');
+        return;
+      }
+      openModal({ type: 'characterSets', slot: props.slot, focus: 'largeDigits' });
+      toast('info', 'Add the large-digit glyphs first, then use this action again.');
+      return;
+    }
+    // Preserve the original PUA mappings as aliases; the clock itself reads
+    // ASCII 0–9 for time and cannot automatically call the PUA alternative set.
+    openModal({ type: 'unicodeRemap', slot: props.slot, glyphIds: largeDigitGlyphIds, targetPreset: 'digits', initialMode: 'alias' });
+  };
 
   const downloadEsphome = async () => {
     try {
@@ -994,6 +1019,16 @@ export function ExportDialog(props: { slot: Slot }) {
             <code>font-manifest.json</code>, <code>EXPORT-REPORT.md</code>, <code>INTEGRATION.md</code> and an <code>integration/</code> folder with snippets for configurator/display/tests/README. The font is rasterized at
             {' '}{m7219.pixelSize}&thinsp;px, bpp={MAX7219_BPP}, exactly as ESPHome will render it.
           </Hint>
+          <Alert severity="info">
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} sx={{ alignItems: { sm: 'center' } }}>
+              <Typography variant="body2" sx={{ flex: 1 }}>
+                <strong>Using your large digits for the clock:</strong> the MAX7219 clock reads time digits as ASCII <code>0–9</code>; it does not automatically substitute the private-use large-digit characters. Map your ten large glyphs to ASCII digits, then re-open Export, run <em>Export &amp; validate</em> again and build a fresh ZIP. Integrate it and choose the exported label in Home Assistant’s <em>Clock font</em> selector. The original digit glyphs stay in the font but become unmapped.
+              </Typography>
+              <Button size="small" variant="outlined" onClick={prepareLargeDigitsForClock} disabled={largeDigitsAlreadyMapped}>
+                {largeDigitsAlreadyMapped ? 'Large digits ready ✓' : largeDigitsReady ? 'Use large digits for time…' : 'Set up large digits…'}
+              </Button>
+            </Stack>
+          </Alert>
           <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, gap: 2 }}>
             <TextField
               label="Display label"
@@ -2232,6 +2267,14 @@ export function HelpDialog() {
           </li>
         </ul>
       </Section>
+      <Section title="Move selected glyphs to another character set">
+        <ul style={{ margin: 0, paddingLeft: 18 }}>
+          <li>In the glyph browser, Ctrl/Cmd-click the glyph cards you want, then press <em>Move to set…</em> in the selection bar.</li>
+          <li>Choose ASCII digits, uppercase/lowercase, printable ASCII, Georgian Mkhedruli, all assigned Georgian letters, or a custom Unicode range. The preview shows the destination character for each glyph in selection order.</li>
+          <li><em>Move</em> replaces the selected glyphs’ old mappings; <em>Add as an alias</em> keeps them. If a destination code point is already used, explicitly take it and confirm — the old glyph remains, but loses only that code point. One <kbd>Ctrl+Z</kbd> reverses the batch.</li>
+          <li>To show the large digits on a MAX7219 clock, use <em>Export → Export for ESPHome MAX7219 Matrix Clock → Use large digits for time…</em>. This aliases the large glyphs to ASCII <code>0</code>–<code>9</code>. After remapping, reopen Export, run <em>Export &amp; validate</em> again and build a fresh ZIP; integrate it, then select your font in the clock’s <em>Clock font</em> selector.</li>
+        </ul>
+      </Section>
       <Section title="Glyph designer and Georgian letters">
         <ul style={{ margin: 0, paddingLeft: 18 }}>
           <li>Open a pixel glyph and choose <em>Glyph designer…</em> to sample a character from a local reference font. Width, height, stroke weight, slant and vertical position are adjustable before the bitmap is placed into the selected glyph.</li>
@@ -2295,6 +2338,8 @@ export function ModalHost() {
       return <LedMatrixDialog slot={modal.slot} />;
     case 'unicodeMappings':
       return <UnicodeMappingsDialog key={`${modal.slot}-${modal.glyphId}`} slot={modal.slot} glyphId={modal.glyphId} />;
+    case 'unicodeRemap':
+      return <BulkUnicodeRemapDialog key={`${modal.slot}-${modal.glyphIds.join(',')}`} slot={modal.slot} glyphIds={modal.glyphIds} targetPreset={modal.targetPreset} initialMode={modal.initialMode} />;
     case 'verticalMetrics':
       return <VerticalMetricsDialog key={modal.slot} slot={modal.slot} />;
     case 'kerning':
