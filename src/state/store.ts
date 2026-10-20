@@ -2,6 +2,7 @@
 import { create } from 'zustand';
 import type { FontDoc, GlyphDoc, Slot, WorkspaceSettings } from '../core/types';
 import type { GlyphCategory } from '../core/charSets';
+import type { UnicodeRemapMode, UnicodeRemapPreset } from '../core/unicodeRemap';
 import { makeId } from '../core/types';
 
 /**
@@ -44,6 +45,7 @@ export type ModalState =
   | { type: 'ledMatrix'; slot: Slot }
   | { type: 'verticalMetrics'; slot: Slot }
   | { type: 'unicodeMappings'; slot: Slot; glyphId: string }
+  | { type: 'unicodeRemap'; slot: Slot; glyphIds: string[]; targetPreset?: UnicodeRemapPreset; initialMode?: UnicodeRemapMode }
   | { type: 'kerning'; slot: Slot; left?: string; right?: string }
   | { type: 'characterSets'; slot: Slot; focus?: 'coverage' | 'add' | 'largeDigits' }
   | { type: 'help' };

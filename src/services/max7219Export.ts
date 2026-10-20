@@ -947,7 +947,13 @@ function buildIntegrationMd(slug: string): string {
     `   python scripts/check_code.py\n` +
     `   \`\`\`\n` +
     `\n` +
-    `4. **Firmware compilation / flashing** remains a separate ESPHome step (compile and flash your node through the ESPHome dashboard or CLI as usual). Repository maintainers handle the version bump and \`CHANGELOG.md\` entry.\n`
+    `4. **Firmware compilation / flashing** remains a separate ESPHome step (compile and flash your node through the ESPHome dashboard or CLI as usual). Repository maintainers handle the version bump and \`CHANGELOG.md\` entry.\n` +
+    `\n` +
+    `## Use your larger digits for the clock time\n` +
+    `\n` +
+    `The clock generates time text with ASCII digits \`0\`–\`9\`; it will not automatically call the private-use alternative digits (U+E000–U+E009 by default). In Pixeel, use **Use large digits for time…** in the MAX7219 export panel to add ASCII \`0\`–\`9\` as mappings of the ten large glyphs. Confirm taking those code points from the current standard-digit glyphs; those glyphs stay in the font, but become unmapped at \`0\`–\`9\`. The large glyphs keep their private-use mappings too.\n` +
+    `\n` +
+    `After remapping, re-open Font → Export, run **Export & validate** again and build a fresh ZIP. Complete the integration steps above, then choose the exported display label in Home Assistant’s **Clock font** selector. The default MAX7219 glyph list already includes ASCII digits, so no special message string or Unicode escape is needed.\n`
   );
 }
 
