@@ -19,6 +19,7 @@ import {
 import SearchIcon from '@mui/icons-material/Search';
 import NoteAddIcon from '@mui/icons-material/NoteAdd';
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
+import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
 import SaveIcon from '@mui/icons-material/Save';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
@@ -139,6 +140,14 @@ export function useCommands(): Command[] {
           const el = document.querySelector('input[aria-label=\"Open font file\"]') as HTMLInputElement | null;
           el?.click();
         },
+      },
+      {
+        id: 'load-matrix-clock-font',
+        label: `Load from Matrix Clock (online) into Font ${active}…`,
+        keywords: ['matrix', 'clock', 'max7219', 'esphome', 'online', 'github', 'download', 'load', 'import'],
+        icon: <CloudDownloadIcon />,
+        group: 'File',
+        action: () => openModal({ type: 'matrixClockFonts', slot: active }),
       },
       {
         id: 'open-project',

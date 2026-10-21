@@ -72,6 +72,7 @@ import { VerticalMetricsDialog } from './VerticalMetricsDialog';
 import { UnicodeMappingsDialog } from './UnicodeMappingsDialog';
 import { CharacterSetsDialog } from './CharacterSetsDialog';
 import { BulkUnicodeRemapDialog } from './BulkUnicodeRemapDialog';
+import { MatrixClockFontsDialog } from './MatrixClockFontsDialog';
 
 /** Numeric field that keeps a number (NaN when empty) and reports it. */
 function NumberField(props: {
@@ -2304,6 +2305,13 @@ export function HelpDialog() {
           <li>To show the large digits on a MAX7219 clock, use <em>Export → Export for ESPHome MAX7219 Matrix Clock → Use large digits for time…</em>. This aliases the large glyphs to ASCII <code>0</code>–<code>9</code>. After remapping, reopen Export, run <em>Export &amp; validate</em> again and build a fresh ZIP; integrate it, then select your font in the clock’s <em>Clock font</em> selector.</li>
         </ul>
       </Section>
+      <Section title="Load fonts from the MAX7219 Matrix Clock (online)">
+        <ul style={{ margin: 0, paddingLeft: 18 }}>
+          <li><em>File → Load from Matrix Clock (online)…</em> lists every font in the <code>fonts/</code> folder of the <code>Esphome-Max7219-Matrix-Clock</code> repository — including <code>fonts/&lt;name&gt;/</code> subfolders — and loads the one you pick into Font A or Font B.</li>
+          <li>The list is discovered automatically from GitHub each time (cached for a few minutes; <em>Refresh list</em> forces a new check), so fonts added to that repository appear without a Pixeel update. Downloads use the same raw file base as the clock firmware and go straight into your browser; an internet connection is required and nothing is uploaded.</li>
+          <li>After editing, send the font back with <em>Export → Export for ESPHome MAX7219 Matrix Clock</em> or <em>Write custom/ folder (Matrix Clock)</em>.</li>
+        </ul>
+      </Section>
       <Section title="Glyph designer and Georgian letters">
         <ul style={{ margin: 0, paddingLeft: 18 }}>
           <li>Open a pixel glyph and choose <em>Glyph designer…</em> to sample a character from a local reference font. Width, height, stroke weight, slant and vertical position are adjustable before the bitmap is placed into the selected glyph.</li>
@@ -2347,6 +2355,8 @@ export function ModalHost() {
   switch (modal.type) {
     case 'newFont':
       return <NewFontDialog />;
+    case 'matrixClockFonts':
+      return <MatrixClockFontsDialog key={modal.slot} slot={modal.slot} />;
     case 'metadata':
       return <MetadataDialog slot={modal.slot} />;
     case 'export':

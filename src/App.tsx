@@ -5,6 +5,7 @@ import { Alert, Box, Button, CssBaseline, Paper, Stack, ThemeProvider, Typograph
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import NoteAddIcon from '@mui/icons-material/NoteAdd';
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
+import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
 import { useStore } from './state/store';
 import type { Slot } from './core/types';
 import { TopBar } from './components/TopBar';
@@ -89,8 +90,8 @@ function EmptyWorkspace(props: { slot?: Slot; full?: boolean }) {
         </Typography>
         <Typography color="text.secondary" sx={{ mt: 1.5, mb: 3 }}>
           {props.full
-            ? 'Create pixel fonts from scratch, or open an existing .ttf, .otf, .woff, .woff2 or .bdf font and edit it. Everything runs in your browser — fonts never leave your device. Drop a font file anywhere to import it.'
-            : 'Create a new font here, or open a .ttf / .otf / .woff / .woff2 / .bdf file into this workspace.'}
+            ? 'Create pixel fonts from scratch, open an existing .ttf, .otf, .woff, .woff2 or .bdf font and edit it, or load one of the ESPHome MAX7219 Matrix Clock fonts online. Everything runs in your browser — fonts never leave your device. Drop a font file anywhere to import it.'
+            : 'Create a new font here, open a .ttf / .otf / .woff / .woff2 / .bdf file into this workspace, or load a Matrix Clock font online.'}
         </Typography>
         <Stack sx={{ justifyContent: 'center' }} direction={{ xs: 'column', sm: 'row' }} spacing={1.5}>
           <Button
@@ -112,6 +113,15 @@ function EmptyWorkspace(props: { slot?: Slot; full?: boolean }) {
             }}
           >
             Open a font file
+          </Button>
+          <Button
+            startIcon={<CloudDownloadIcon />}
+            onClick={() => {
+              setActive(slot);
+              openModal({ type: 'matrixClockFonts', slot });
+            }}
+          >
+            Load a Matrix Clock font
           </Button>
           {props.full && <Button onClick={() => openModal({ type: 'help' })}>Help</Button>}
         </Stack>

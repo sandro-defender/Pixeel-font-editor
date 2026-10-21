@@ -3,6 +3,7 @@ import { FONT_FILE_ACCEPT } from '../core/fontFiles';
 import React, { useRef, useState } from 'react';
 import { AppBar, Badge, Box, Button, Divider, IconButton, ListItemIcon, ListItemText, Menu, MenuItem, Stack, Tab, Tabs, Toolbar, Tooltip, Typography } from '@mui/material';
 import FolderOpenIcon from '@mui/icons-material/FolderOpen';
+import CloudDownloadIcon from '@mui/icons-material/CloudDownload';
 import NoteAddIcon from '@mui/icons-material/NoteAdd';
 import SaveIcon from '@mui/icons-material/Save';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
@@ -162,6 +163,10 @@ export function TopBar(props: { onOpenPalette?: () => void }) {
             <MenuItem key="open" onClick={() => { close(); fileInputRef.current?.click(); }}>
               <ListItemIcon><FolderOpenIcon fontSize="small" /></ListItemIcon>
               <ListItemText primary="Open font (.ttf .otf .woff .woff2 .bdf)" secondary={`Into Font ${active}`} />
+            </MenuItem>,
+            <MenuItem key="matrixclock" onClick={() => { close(); openModal({ type: 'matrixClockFonts', slot: active }); }}>
+              <ListItemIcon><CloudDownloadIcon fontSize="small" /></ListItemIcon>
+              <ListItemText primary="Load from Matrix Clock (online)…" secondary="Fonts from Esphome-Max7219-Matrix-Clock" />
             </MenuItem>,
             <MenuItem key="proj" onClick={() => { close(); projectInputRef.current?.click(); }}>
               <ListItemIcon><FolderOpenIcon fontSize="small" /></ListItemIcon>
