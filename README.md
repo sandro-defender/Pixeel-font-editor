@@ -13,7 +13,7 @@ account, no paid APIs. **Uploaded fonts never leave your device.**
 | Area | What you can do |
 | --- | --- |
 | Workspaces | Two independent fonts (Font A / Font B), side-by-side comparison, per-font export |
-| Import | `.ttf`, `.otf`, **`.woff`, `.woff2`** and **`.bdf`** via file picker or drag & drop (`.otf`/CFF is converted to quadratic curves; WOFF/WOFF2 are decompressed in your browser, no server; **BDF bitmap fonts open as editable pixel fonts** with the cell size, baseline and metrics detected); **pixel fonts are detected** — the importer finds the cell size at which every outline lands on the lattice and offers a lossless conversion |
+| Import | `.ttf`, `.otf`, **`.woff`, `.woff2`** and **`.bdf`** via file picker or drag & drop, or **online from the ESPHome MAX7219 Matrix Clock** (*File → Load from Matrix Clock (online)…* — fonts are discovered automatically from its `fonts/` folder, subfolders included; see [Loading the clock's own fonts into Pixeel (online)](#loading-the-clocks-own-fonts-into-pixeel-online)) (`.otf`/CFF is converted to quadratic curves; WOFF/WOFF2 are decompressed in your browser, no server; **BDF bitmap fonts open as editable pixel fonts** with the cell size, baseline and metrics detected); **pixel fonts are detected** — the importer finds the cell size at which every outline lands on the lattice and offers a lossless conversion |
 | Glyph browser | Searchable grid with previews, Unicode values and names; create / duplicate / delete; re-assign Unicode with conflict validation; `.notdef` is always preserved; unmapped glyphs are visually distinct; add the 33 modern Mkhedruli starter glyphs or all 172 assigned Georgian letters across Mkhedruli, Mtavruli, Asomtavruli and Nuskhuri |
 | Character sets & coverage | Import any font and see per set how many characters are **present / blank / missing** — English upper/lower case, the 33 modern Georgian Mkhedruli letters (U+10D0–U+10F0), standard digits, **double-size alternative digits** and common punctuation. A character counts as present only when its glyph really has artwork (a mapping to `.notdef` or an empty grid is reported as missing/blank). *Add Character Sets* completes one or several sets in a single undoable step — existing glyphs are kept by default, new characters are editable blank grids (or a copy of a template at ×1/×2), *Fill blanks* and *Overwrite* are explicit (overwriting a design asks for confirmation), and every missing character can also be added individually from the *Missing Glyphs* tab |
 | Double-size digits | A **configurable** alternative-digit set (default PUA U+E000–U+E009) with its own glyphs, so regular and large digits can be used side by side. Workflow: add the set → *Copy* a standard digit into its counterpart → *×2 nearest-neighbour* → edit independently. Changing the mapping **moves** the existing glyphs (artwork, advances and names stay), refuses code points that already belong to another character, and asks before anything is replaced; insert the large digits in the preview from the Sets panel |
@@ -121,6 +121,41 @@ Design rules (checked against the compiled TTF):
 `contractVersion: 1` in the manifest and `font-info.json` keeps the two projects in sync.
 Consumers ignore unknown files/JSON fields and use documented defaults for missing optional
 fields. Custom-slot YAML is a convenience; the clock installer regenerates it canonically.
+
+### Loading the clock's own fonts into Pixeel (online)
+
+*File → **Load from Matrix Clock (online)…*** (also on the empty-workspace screen and in the
+command palette, Ctrl/Cmd+K) opens a picker with the fonts of the
+[Matrix Clock project](https://sandro-defender.github.io/Esphome-Max7219-Matrix-Clock/) — no need
+to clone the repository or download files by hand:
+
+1. Choose the target workspace (*Font A* or *Font B*). If it holds unsaved work, Pixeel asks
+   before replacing it — before anything is downloaded.
+2. Pick a font and press **Load into A/B**. The file downloads into your browser and opens like
+   any imported font: pixel fonts are detected and offered the lossless pixel-grid conversion,
+   and the usual character-coverage report is shown.
+3. Edit, then send it back with **Export for ESPHome MAX7219 Matrix Clock** (catalogue ZIP) or
+   **Write custom/ folder (Matrix Clock)** as described above.
+
+How it stays automatic:
+
+- The list comes from the GitHub API for
+  [`sandro-defender/Esphome-Max7219-Matrix-Clock`](https://github.com/sandro-defender/Esphome-Max7219-Matrix-Clock/tree/main/fonts):
+  the repository tree is scanned recursively, so **every** `.ttf`/`.otf`/`.woff`/`.woff2`/`.bdf`
+  under `fonts/` is listed — the bundled `fonts/max7219.ttf` and catalogue faces in
+  `fonts/<slug>/` **subfolders** alike. Fonts committed there later appear without a Pixeel
+  update; if the tree reply is truncated/unavailable the folder walk falls back to the contents
+  API. The list is cached for a few minutes (**Refresh list** forces a fresh check) to stay well
+  inside GitHub's anonymous rate limit.
+- Downloads use `raw.githubusercontent.com/…/main/fonts/…` — the same `fonts_base_url` the clock
+  firmware is configured with — and fall back to the project's GitHub Pages site. (The Pages site
+  itself publishes only the web configurator, not the repository's `fonts/` folder.)
+- This is the one Pixeel feature that needs an internet connection, and it is strictly
+  *inbound*: a `GET` to GitHub for the listing and the font file. Nothing about your work is
+  uploaded. Offline, the dialog explains the failure and you can still download a font from the
+  repository by hand and use *File → Open font*.
+- Respect each font's license — the `LICENSE.txt` beside it in the repository (the font's
+  embedded license/copyright is preserved on import, as everywhere in Pixeel).
 
 ## Using a Pixeel font in the MAX7219 Matrix Clock
 
@@ -460,7 +495,7 @@ Use **Shift+arrows** for that.
 ```
 src/core/       font model, bitmap engine, contour tracer, pixel-grid/rasterizer, TTF codec, WOFF/WOFF2/BDF importers, licensing
 src/state/      zustand store (undo/redo history), glyph mutators
-src/services/   worker client, preview fonts, persistence, file actions, ESPHome package export
+src/services/   worker client, preview fonts, persistence, file actions, ESPHome package export, Matrix Clock online font loading
 src/workers/    export/preview web worker
 src/components/ UI: MUI top bar, glyph browser, editors, side panels, dialogs
 src/render/     canvas/SVG glyph rendering (cached bitmap layers)

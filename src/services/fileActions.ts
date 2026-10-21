@@ -7,6 +7,7 @@ import { importAnyFont } from '../core/importAny';
 import { detectFontPixelGrid } from '../core/pixelGrid';
 import { dropSource, downloadProjectFile, parseProjectFile, projectFileName, registerImportedSource } from './persistence';
 import { releasePreview } from './previewFont';
+import { fetchMatrixClockFontBytes, type MatrixClockOnlineFont } from './matrixClockFonts';
 
 /**
  * Detect the native pixel grid of an imported font, if it has one.
@@ -61,18 +62,16 @@ export function saveProjectFile(): void {
   s.toast('success', `Project saved as ${name}. Both fonts, metadata, pixel grids and settings are included.`);
 }
 
-/** Import a font file into a workspace slot (asks before replacing unsaved work). */
-export async function importFontFile(slot: Slot, file: File): Promise<void> {
+/**
+ * Parse already-loaded font bytes and put the font into a workspace slot.
+ * The caller is responsible for the discard-unsaved-changes confirmation;
+ * resolves true when the font was loaded.
+ */
+async function loadFontBuffer(slot: Slot, buffer: ArrayBuffer, fileName: string, origin?: string): Promise<boolean> {
   const store = useStore.getState();
-  if (store.fonts[slot] && !(await confirmDiscardChanges([slot], `Importing “${file.name}” into Font ${slot}`))) return;
-  if (!FONT_FILE_RE.test(file.name)) {
-    // the content decides what it really is; the name only triggers a hint
-    store.toast('info', `“${file.name}” has an unusual extension (expected ${FONT_FILE_LABEL}); trying to read it anyway.`);
-  }
-  store.setBusy(`Reading ${file.name}…`);
+  store.setBusy(`Reading ${fileName}…`);
   try {
-    const buffer = await file.arrayBuffer();
-    const { doc, sourceTtf, warnings, bdf } = await importAnyFont(buffer, file.name);
+    const { doc, sourceTtf, warnings, bdf } = await importAnyFont(buffer, fileName);
     const ref = sourceTtf ? registerImportedSource(sourceTtf) : null; // BDF has no outline source to preserve
     const before = [useStore.getState().fonts.A, useStore.getState().fonts.B];
     const imported = { ...doc, sourceRef: ref };
@@ -82,7 +81,7 @@ export async function importFontFile(slot: Slot, file: File): Promise<void> {
     const found = bdf ? null : detectImportedPixelGrid(imported);
     const current = useStore.getState();
     releasePreview(slot);
-    current.loadFont(slot, imported, file.name);
+    current.loadFont(slot, imported, fileName);
     current.setActive(slot);
     releaseSourcesNotIn(before, [useStore.getState().fonts.A, useStore.getState().fonts.B]);
     if (bdf) {
@@ -91,7 +90,7 @@ export async function importFontFile(slot: Slot, file: File): Promise<void> {
         `Imported BDF “${doc.meta.fontFamily}” into Font ${slot} as a pixel font: ${bdf.cellWidth}×${bdf.cellHeight} px cells${bdf.monospaced ? ' (monospaced)' : ' (proportional)'}, ${bdf.baselineRow} row${bdf.baselineRow === 1 ? '' : 's'} below the baseline, ${bdf.glyphCount} glyphs.`,
       );
     } else {
-      current.toast('success', `Imported “${doc.meta.fontFamily}” (${doc.glyphs.length} glyphs) into Font ${slot}.`);
+      current.toast('success', `Imported “${doc.meta.fontFamily}” (${doc.glyphs.length} glyphs) into Font ${slot}${origin ? ` from ${origin}` : ''}.`);
     }
     warnings.forEach((w) => current.toast('warning', w));
 
@@ -103,11 +102,60 @@ export async function importFontFile(slot: Slot, file: File): Promise<void> {
       );
       useStore.getState().openModal({ type: 'rasterize', slot, scope: 'font' });
     }
+    return true;
   } catch (err) {
     useStore.getState().toast('error', `Import failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
   } finally {
     useStore.getState().setBusy(null);
   }
+}
+
+/** Import font bytes already in memory (asks before replacing unsaved work). */
+export async function importFontBuffer(slot: Slot, buffer: ArrayBuffer, fileName: string, origin?: string): Promise<boolean> {
+  const store = useStore.getState();
+  if (store.fonts[slot] && !(await confirmDiscardChanges([slot], `Importing “${fileName}” into Font ${slot}`))) return false;
+  return loadFontBuffer(slot, buffer, fileName, origin);
+}
+
+/** Import a font file into a workspace slot (asks before replacing unsaved work). */
+export async function importFontFile(slot: Slot, file: File): Promise<void> {
+  const store = useStore.getState();
+  if (store.fonts[slot] && !(await confirmDiscardChanges([slot], `Importing “${file.name}” into Font ${slot}`))) return;
+  if (!FONT_FILE_RE.test(file.name)) {
+    // the content decides what it really is; the name only triggers a hint
+    store.toast('info', `“${file.name}” has an unusual extension (expected ${FONT_FILE_LABEL}); trying to read it anyway.`);
+  }
+  store.setBusy(`Reading ${file.name}…`);
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await file.arrayBuffer();
+  } catch (err) {
+    useStore.getState().setBusy(null);
+    useStore.getState().toast('error', `Import failed: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  await loadFontBuffer(slot, buffer, file.name);
+}
+
+/**
+ * Download one font from the ESPHome MAX7219 Matrix Clock repository and
+ * load it into a workspace slot (asks, before downloading, before replacing
+ * unsaved work). Resolves true when the font was loaded.
+ */
+export async function importMatrixClockFont(slot: Slot, font: MatrixClockOnlineFont): Promise<boolean> {
+  const store = useStore.getState();
+  if (store.fonts[slot] && !(await confirmDiscardChanges([slot], `Loading “${font.fileName}” from the Matrix Clock into Font ${slot}`))) return false;
+  store.setBusy(`Downloading ${font.fileName} from the Matrix Clock…`);
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await fetchMatrixClockFontBytes(font);
+  } catch (err) {
+    useStore.getState().setBusy(null);
+    useStore.getState().toast('error', `Matrix Clock download failed: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+  return loadFontBuffer(slot, buffer, font.fileName, `the Matrix Clock (${font.path})`);
 }
 
 /** Load a project file into both workspaces. */

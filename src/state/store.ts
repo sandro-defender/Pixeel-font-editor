@@ -34,6 +34,7 @@ export interface Toast {
 export type ModalState =
   | { type: 'none' }
   | { type: 'newFont' }
+  | { type: 'matrixClockFonts'; slot: Slot }
   | { type: 'metadata'; slot: Slot }
   | { type: 'export'; slot: Slot }
   | { type: 'transfer'; from: Slot; glyphIds: string[]; mode?: TransferMode }
